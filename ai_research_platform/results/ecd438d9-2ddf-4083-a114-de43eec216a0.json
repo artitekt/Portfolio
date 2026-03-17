@@ -1,0 +1,94 @@
+{
+  "experiment_id": "ecd438d9-2ddf-4083-a114-de43eec216a0",
+  "experiment_name": "demo_comparison_comparison",
+  "description": "Comparison of 3 models",
+  "tags": [
+    "comparison",
+    "demo",
+    "comparison",
+    "synthetic"
+  ],
+  "parameters": {
+    "base_config": {
+      "experiment_name": "demo_comparison",
+      "description": "Demo model comparison experiment",
+      "tags": [
+        "demo",
+        "comparison",
+        "synthetic"
+      ],
+      "dataset": {
+        "source_type": "synthetic",
+        "dataset_type": "classification",
+        "file_path": null,
+        "target_column": null,
+        "feature_columns": null,
+        "n_samples": 1000,
+        "n_features": 20,
+        "n_informative": 10,
+        "n_classes": 2,
+        "flip_y": 0.01,
+        "trend": 0.01,
+        "seasonality": true,
+        "test_size": 0.2,
+        "scale_features": true,
+        "encode_labels": true,
+        "random_state": 42
+      },
+      "model": {
+        "model_name": "random_forest_classification",
+        "hyperparameters": {}
+      },
+      "evaluation": {
+        "task_type": "classification",
+        "metrics": [
+          "accuracy",
+          "precision",
+          "recall",
+          "f1"
+        ],
+        "cross_validation": false,
+        "cv_folds": 5
+      },
+      "save_model": true,
+      "save_predictions": true,
+      "save_dataset_info": true
+    },
+    "models": [
+      "logistic_regression",
+      "random_forest_classification",
+      "gradient_boosting_classification"
+    ]
+  },
+  "start_time": "2026-03-15T20:59:02.862598",
+  "status": "completed",
+  "results": {
+    "final_metrics": {
+      "accuracy": {
+        "model": "gradient_boosting_classification",
+        "score": 0.93
+      },
+      "precision": {
+        "model": "gradient_boosting_classification",
+        "score": 0.930172068827531
+      },
+      "recall": {
+        "model": "gradient_boosting_classification",
+        "score": 0.93
+      },
+      "f1": {
+        "model": "gradient_boosting_classification",
+        "score": 0.92999299929993
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "path": "results/reports/demo_comparison_comparison_comparison_20260315_205904.json",
+      "type": "comparison_report",
+      "timestamp": "2026-03-15T20:59:04.079218"
+    }
+  ],
+  "end_time": "2026-03-15T20:59:04.079237",
+  "duration_seconds": 1.216639
+}

@@ -1,0 +1,186 @@
+{
+  "experiment_id": "4cf56768-09cb-4769-8187-408353b077b9",
+  "experiment_name": "test_simple",
+  "config": {
+    "experiment_name": "test_simple",
+    "description": "Simple test",
+    "tags": [],
+    "dataset": {
+      "source_type": "synthetic",
+      "dataset_type": "classification",
+      "file_path": null,
+      "target_column": null,
+      "feature_columns": null,
+      "n_samples": 100,
+      "n_features": 10,
+      "n_informative": 5,
+      "n_classes": 2,
+      "flip_y": 0.01,
+      "trend": 0.01,
+      "seasonality": true,
+      "test_size": 0.2,
+      "scale_features": true,
+      "encode_labels": true,
+      "random_state": 42
+    },
+    "model": {
+      "model_name": "logistic_regression",
+      "hyperparameters": {}
+    },
+    "evaluation": {
+      "task_type": "classification",
+      "metrics": [
+        "accuracy",
+        "precision",
+        "recall",
+        "f1"
+      ],
+      "cross_validation": false,
+      "cv_folds": 5
+    },
+    "save_model": true,
+    "save_predictions": true,
+    "save_dataset_info": true
+  },
+  "dataset_metadata": {
+    "dataset_type": "classification",
+    "n_samples": 100,
+    "n_features": 10,
+    "n_informative": 5,
+    "n_classes": 2,
+    "class_distribution": {
+      "0": 50,
+      "1": 50
+    },
+    "feature_names": [
+      "feature_0",
+      "feature_1",
+      "feature_2",
+      "feature_3",
+      "feature_4",
+      "feature_5",
+      "feature_6",
+      "feature_7",
+      "feature_8",
+      "feature_9"
+    ]
+  },
+  "training_metrics": {
+    "train_accuracy": 0.825,
+    "train_precision": 0.825814536340852,
+    "train_recall": 0.825,
+    "train_f1": 0.8248905565978737,
+    "n_samples": 80,
+    "n_features": 10,
+    "n_classes": 2
+  },
+  "evaluation_results": {
+    "model_name": "LogisticRegressionModel",
+    "dataset_name": "classification",
+    "task_type": "classification",
+    "metrics": {
+      "accuracy": 0.8,
+      "precision": 0.8,
+      "recall": 0.8,
+      "f1": 0.8,
+      "per_class_metrics": {
+        "0": {
+          "precision": 0.8,
+          "recall": 0.8,
+          "f1": 0.8,
+          "support": 10
+        },
+        "1": {
+          "precision": 0.8,
+          "recall": 0.8,
+          "f1": 0.8,
+          "support": 10
+        }
+      },
+      "confusion_matrix": [
+        [
+          8,
+          2
+        ],
+        [
+          2,
+          8
+        ]
+      ],
+      "n_samples": 20,
+      "n_classes": 2
+    },
+    "model_info": {
+      "model_type": "LogisticRegressionModel",
+      "is_trained": true,
+      "hyperparameters": {},
+      "training_metrics": {
+        "train_accuracy": 0.825,
+        "train_precision": 0.825814536340852,
+        "train_recall": 0.825,
+        "train_f1": 0.8248905565978737,
+        "n_samples": 80,
+        "n_features": 10,
+        "n_classes": 2
+      }
+    },
+    "predictions": [
+      0,
+      1,
+      1,
+      1,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      0,
+      1
+    ],
+    "true_values": [
+      1,
+      1,
+      1,
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      1,
+      1
+    ]
+  },
+  "cross_validation_results": null,
+  "feature_names": [
+    "feature_0",
+    "feature_1",
+    "feature_2",
+    "feature_3",
+    "feature_4",
+    "feature_5",
+    "feature_6",
+    "feature_7",
+    "feature_8",
+    "feature_9"
+  ],
+  "target_name": null
+}

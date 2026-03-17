@@ -1,0 +1,58 @@
+{
+  "experiment_id": "61fdef97-c3e0-406d-9f18-0685a985aac4",
+  "experiment_name": "test_simple",
+  "description": "Simple test",
+  "tags": [],
+  "parameters": {
+    "experiment_name": "test_simple",
+    "description": "Simple test",
+    "tags": [],
+    "dataset": {
+      "source_type": "synthetic",
+      "dataset_type": "classification",
+      "file_path": null,
+      "target_column": null,
+      "feature_columns": null,
+      "n_samples": 100,
+      "n_features": 10,
+      "n_informative": 5,
+      "n_classes": 2,
+      "flip_y": 0.01,
+      "trend": 0.01,
+      "seasonality": true,
+      "test_size": 0.2,
+      "scale_features": true,
+      "encode_labels": true,
+      "random_state": 42
+    },
+    "model": {
+      "model_name": "logistic_regression",
+      "hyperparameters": {}
+    },
+    "evaluation": {
+      "task_type": "classification",
+      "metrics": [
+        "accuracy",
+        "precision",
+        "recall",
+        "f1"
+      ],
+      "cross_validation": false,
+      "cv_folds": 5
+    },
+    "save_model": true,
+    "save_predictions": true,
+    "save_dataset_info": true
+  },
+  "start_time": "2026-03-15T19:13:38.792443",
+  "status": "failed",
+  "results": {
+    "dataset_info": {
+      "dataset_metadata": {
+        "dataset_type": "classification",
+        "n_samples": 100,
+        "n_features": 10,
+        "n_informative": 5,
+        "n_classes": 2,
+        "class_distribution": {
+          

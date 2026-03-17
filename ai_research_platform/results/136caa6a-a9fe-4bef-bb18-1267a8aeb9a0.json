@@ -1,0 +1,64 @@
+{
+  "experiment_id": "136caa6a-a9fe-4bef-bb18-1267a8aeb9a0",
+  "experiment_name": "demo_regression",
+  "description": "Demo regression experiment with synthetic data",
+  "tags": [
+    "demo",
+    "regression",
+    "synthetic"
+  ],
+  "parameters": {
+    "experiment_name": "demo_regression",
+    "description": "Demo regression experiment with synthetic data",
+    "tags": [
+      "demo",
+      "regression",
+      "synthetic"
+    ],
+    "dataset": {
+      "source_type": "synthetic",
+      "dataset_type": "regression",
+      "file_path": null,
+      "target_column": null,
+      "feature_columns": null,
+      "n_samples": 1000,
+      "n_features": 10,
+      "n_informative": 5,
+      "n_classes": 2,
+      "flip_y": 0.1,
+      "trend": 0.01,
+      "seasonality": true,
+      "test_size": 0.2,
+      "scale_features": true,
+      "encode_labels": true,
+      "random_state": 42
+    },
+    "model": {
+      "model_name": "random_forest_regression",
+      "hyperparameters": {
+        "n_estimators": 100,
+        "max_depth": 10
+      }
+    },
+    "evaluation": {
+      "task_type": "regression",
+      "metrics": [
+        "r2",
+        "rmse",
+        "mae",
+        "mse"
+      ],
+      "cross_validation": false,
+      "cv_folds": 5
+    },
+    "save_model": true,
+    "save_predictions": false,
+    "save_dataset_info": true
+  },
+  "start_time": "2026-03-15T21:09:16.179110",
+  "status": "failed",
+  "results": {},
+  "artifacts": [],
+  "end_time": "2026-03-15T21:09:16.186439",
+  "duration_seconds": 0.007329
+}

@@ -1,0 +1,28 @@
+# Core dependencies
+pydantic>=2.0.0
+numpy>=1.19.0
+asyncio-mqtt>=0.10.0
+
+# Optional dependencies
+# Uncomment as needed:
+
+# For scikit-learn model support
+# scikit-learn>=1.0.0
+
+# For ONNX model support  
+# onnxruntime>=1.8.0
+
+# For TensorFlow model support
+# tensorflow>=2.6.0
+
+# For PyTorch model support
+# torch>=1.9.0
+
+# For webhooks and HTTP server
+# aiohttp>=3.7.0
+
+# For configuration files
+# PyYAML>=5.4.0
+
+# For monitoring and metrics
+# prometheus-client>=0.11.0

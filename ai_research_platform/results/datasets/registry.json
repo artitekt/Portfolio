@@ -1,0 +1,24 @@
+{
+  "datasets": {
+    "test_dataset": {
+      "name": "test_dataset",
+      "path": "/tmp/tmp_6q3h4ns.csv",
+      "registered_at": "2026-03-16T13:19:50.661408",
+      "metadata": {
+        "rows": 5,
+        "features": 2,
+        "task": "classification",
+        "description": "Test dataset",
+        "target_column": "target",
+        "feature_columns": null,
+        "categorical_features": [],
+        "numerical_features": [],
+        "missing_values": false,
+        "size_mb": 6.198883056640625e-05,
+        "format": "csv"
+      }
+    }
+  },
+  "created_at": "2026-03-16T13:19:50.652670",
+  "updated_at": "2026-03-16T13:19:50.661445"
+}
