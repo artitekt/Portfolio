@@ -1,0 +1,194 @@
+{
+  "experiment_id": "0845dd87-ac88-4c80-a9e2-b3637526371a",
+  "experiment_name": "autonomous_ai_decisions",
+  "description": "Autonomous AI system decision logging",
+  "tags": [
+    "autonomous",
+    "decisions",
+    "real-time"
+  ],
+  "parameters": {
+    "experiment_name": "autonomous_ai_decisions",
+    "description": "Autonomous AI system decision logging",
+    "tags": [
+      "autonomous",
+      "decisions",
+      "real-time"
+    ],
+    "dataset": {
+      "source_type": "synthetic",
+      "dataset_type": "classification",
+      "file_path": null,
+      "target_column": null,
+      "feature_columns": null,
+      "n_samples": 1000,
+      "n_features": 20,
+      "n_informative": 10,
+      "n_classes": 2,
+      "flip_y": 0.01,
+      "trend": 0.01,
+      "seasonality": true,
+      "test_size": 0.2,
+      "scale_features": true,
+      "encode_labels": true,
+      "random_state": 42
+    },
+    "model": {
+      "model_name": "random_forest_classification",
+      "hyperparameters": {}
+    },
+    "evaluation": {
+      "task_type": "classification",
+      "metrics": [
+        "accuracy",
+        "precision",
+        "recall",
+        "f1"
+      ],
+      "cross_validation": false,
+      "cv_folds": 5
+    },
+    "save_model": true,
+    "save_predictions": true,
+    "save_dataset_info": true
+  },
+  "start_time": "2026-03-19T10:33:41.854520",
+  "status": "completed",
+  "results": {
+    "dataset_info": {
+      "dataset_metadata": {
+        "dataset_type": "classification",
+        "n_samples": 1000,
+        "n_features": 20,
+        "n_informative": 10,
+        "n_classes": 2,
+        "class_distribution": {
+          "0": 499,
+          "1": 501
+        },
+        "feature_names": [
+          "feature_0",
+          "feature_1",
+          "feature_2",
+          "feature_3",
+          "feature_4",
+          "feature_5",
+          "feature_6",
+          "feature_7",
+          "feature_8",
+          "feature_9",
+          "feature_10",
+          "feature_11",
+          "feature_12",
+          "feature_13",
+          "feature_14",
+          "feature_15",
+          "feature_16",
+          "feature_17",
+          "feature_18",
+          "feature_19"
+        ]
+      },
+      "train_shape": [
+        800,
+        20
+      ],
+      "test_shape": [
+        200,
+        20
+      ],
+      "feature_names": [
+        "feature_0",
+        "feature_1",
+        "feature_2",
+        "feature_3",
+        "feature_4",
+        "feature_5",
+        "feature_6",
+        "feature_7",
+        "feature_8",
+        "feature_9",
+        "feature_10",
+        "feature_11",
+        "feature_12",
+        "feature_13",
+        "feature_14",
+        "feature_15",
+        "feature_16",
+        "feature_17",
+        "feature_18",
+        "feature_19"
+      ],
+      "target_name": null
+    },
+    "model_info": {
+      "model_type": "RandomForestClassificationModel",
+      "is_trained": true,
+      "hyperparameters": {
+        "n_estimators": 100,
+        "random_state": 42
+      },
+      "training_metrics": {
+        "train_accuracy": 1.0,
+        "train_precision": 1.0,
+        "train_recall": 1.0,
+        "train_f1": 1.0,
+        "n_samples": 800,
+        "n_features": 20,
+        "n_estimators": 100,
+        "n_classes": 2
+      }
+    },
+    "final_metrics": {
+      "accuracy": 0.925,
+      "precision": 0.9253828445601041,
+      "recall": 0.925,
+      "f1": 0.9249831212022704,
+      "per_class_metrics": {
+        "0": {
+          "precision": 0.912621359223301,
+          "recall": 0.94,
+          "f1": 0.9261083743842364,
+          "support": 100
+        },
+        "1": {
+          "precision": 0.9381443298969072,
+          "recall": 0.91,
+          "f1": 0.9238578680203046,
+          "support": 100
+        }
+      },
+      "confusion_matrix": [
+        [
+          94,
+          6
+        ],
+        [
+          9,
+          91
+        ]
+      ],
+      "n_samples": 200,
+      "n_classes": 2
+    }
+  },
+  "artifacts": [
+    {
+      "path": "results/autonomous_ai_decisions_20260319_103342.json",
+      "type": "results",
+      "timestamp": "2026-03-19T10:33:42.200156"
+    },
+    {
+      "path": "results/models/autonomous_ai_decisions_20260319_103342.pkl",
+      "type": "model",
+      "timestamp": "2026-03-19T10:33:42.247117"
+    },
+    {
+      "path": "results/predictions/autonomous_ai_decisions_20260319_103342.csv",
+      "type": "predictions",
+      "timestamp": "2026-03-19T10:33:42.248220"
+    }
+  ],
+  "end_time": "2026-03-19T10:33:42.248231",
+  "duration_seconds": 0.393711
+}
