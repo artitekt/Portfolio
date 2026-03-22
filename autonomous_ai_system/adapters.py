@@ -166,9 +166,75 @@ class TradeMetrics:
                 self.range_loss_count += 1
                 self.range_total_losses_value += abs(reward)
     
+    def _compute_ev(self, win_count: int, loss_count: int, total_wins_value: float, total_losses_value: float, regime: str) -> float:
+        """
+        Calculate proper expected value for a specific regime: EV = (win_rate × avg_win) - (loss_rate × avg_loss)
+        
+        Args:
+            win_count: Number of winning trades for this regime
+            loss_count: Number of losing trades for this regime  
+            total_wins_value: Total value of winning trades for this regime
+            total_losses_value: Total value of losing trades for this regime
+            regime: Regime name for logging ("TREND" or "RANGE")
+            
+        Returns:
+            Expected value, or 0 if insufficient data (<10 trades)
+        """
+        total_trades = win_count + loss_count
+        
+        # Safeguard: insufficient data
+        if total_trades < 10:
+            return 0.0
+        
+        # Safeguard: division by zero
+        if win_count == 0 or loss_count == 0:
+            return 0.0
+        
+        # Calculate rates
+        win_rate = win_count / total_trades
+        loss_rate = loss_count / total_trades
+        
+        # Calculate averages
+        avg_win = total_wins_value / win_count
+        avg_loss = total_losses_value / loss_count
+        
+        # Enhanced EV calculation
+        ev = (win_rate * avg_win) - (loss_rate * avg_loss)
+        
+        # Enhanced logging
+        print(f"[EV][{regime}] win_rate={win_rate:.3f}, avg_win={avg_win:.6f}, avg_loss={avg_loss:.6f}, EV={ev:.6f}")
+        
+        return ev
+    
+    def expected_value_trend(self) -> float:
+        """
+        Calculate TREND regime expected value.
+        
+        Returns:
+            Expected value for TREND regime, or 0 if insufficient data (<10 trades)
+        """
+        return self._compute_ev(
+            self.trend_win_count, self.trend_loss_count,
+            self.trend_total_wins_value, self.trend_total_losses_value,
+            "TREND"
+        )
+    
+    def expected_value_range(self) -> float:
+        """
+        Calculate RANGE regime expected value.
+        
+        Returns:
+            Expected value for RANGE regime, or 0 if insufficient data (<10 trades)
+        """
+        return self._compute_ev(
+            self.range_win_count, self.range_loss_count,
+            self.range_total_wins_value, self.range_total_losses_value,
+            "RANGE"
+        )
+    
     def expected_value(self) -> float:
         """
-        Calculate proper expected value: EV = (win_rate × avg_win) - (loss_rate × avg_loss)
+        Legacy global expected value calculation (for backward compatibility).
         
         Returns:
             Expected value, or 0 if insufficient data (<10 trades)
@@ -193,9 +259,6 @@ class TradeMetrics:
         
         # Enhanced EV calculation
         ev = (win_rate * avg_win) - (loss_rate * avg_loss)
-        
-        # Enhanced logging
-        print(f"[EV] win_rate={win_rate:.3f}, avg_win={avg_win:.6f}, avg_loss={avg_loss:.6f}, EV={ev:.6f}")
         
         return ev
     
@@ -357,8 +420,29 @@ class PipelineAdapter:
                 trend_aligned = (prediction_fast * prediction_slow) > 0
                 momentum_confirmed = (prediction_fast * momentum_fast) > 0
                 
-                # Calculate base confidence as ratio of signal to threshold
-                dynamic_threshold = 1.5 * volatility_fast
+                # Calculate base confidence as ratio of signal to threshold with volatility compression
+                volatility_factor = max(volatility_fast, 0.00005)
+                
+                # Apply compression for low-volatility conditions
+                compression = 1.0
+                if volatility_fast < 0.00008:
+                    compression = 0.5   # more aggressive trading in quiet markets
+                elif volatility_fast < 0.00012:
+                    compression = 0.75
+                
+                # Calculate dynamic threshold with compression and regime multiplier
+                regime_multiplier = 1.0  # Could be regime-specific in future
+                dynamic_threshold = volatility_factor * 1.5 * regime_multiplier * compression
+                
+                # Apply minimum threshold safety constraint
+                dynamic_threshold = max(dynamic_threshold, 0.00005)
+                
+                # Debug logging for threshold adjustments
+                print(f"[Agent] Threshold Adjusted:")
+                print(f"  volatility={volatility_fast:.6f}")
+                print(f"  compression={compression:.2f}")
+                print(f"  final_threshold={dynamic_threshold:.6f}")
+                
                 base_signal_strength = abs(prediction_fast) / dynamic_threshold
                 
                 # Apply weighting factors
@@ -673,32 +757,63 @@ class AgentAdapter:
             print(f"  Regime: {regime}, trend_strength={trend_strength:.6f}, vol_ratio={volatility_ratio:.3f}")
             print(f"  Confidence: {confidence:.6f}")
             
-            # Step 1: Expected Value (EV) Filtering with Warm-up Bypass
-            ev = self.trade_metrics.expected_value()
-            total_trades = self.trade_metrics.total_trades
-            min_trades_for_ev = 20
-            is_warmup_phase = total_trades < min_trades_for_ev
+            # Step 1: Regime-Specific Expected Value (EV) Filtering with Warm-up Bypass
+            # Calculate both regime-specific EVs for logging
+            ev_trend = self.trade_metrics.expected_value_trend()
+            ev_range = self.trade_metrics.expected_value_range()
+            
+            # Determine active EV based on current regime
+            if regime == MarketRegime.TREND.value:
+                active_ev = ev_trend
+                regime_trades = self.trade_metrics.trend_win_count + self.trade_metrics.trend_loss_count
+                regime_name = "TREND"
+            elif regime == MarketRegime.RANGE.value:
+                active_ev = ev_range
+                regime_trades = self.trade_metrics.range_win_count + self.trade_metrics.range_loss_count
+                regime_name = "RANGE"
+            else:  # BREAKOUT treated as RANGE
+                active_ev = ev_range
+                regime_trades = self.trade_metrics.range_win_count + self.trade_metrics.range_loss_count
+                regime_name = "RANGE (BREAKOUT)"
+            
+            min_trades_for_ev = 10
+            is_warmup_phase = regime_trades < min_trades_for_ev
+            
+            # Log both EVs every cycle for visibility
+            print(f"[EV] TREND: trades={self.trade_metrics.trend_win_count + self.trade_metrics.trend_loss_count} EV={ev_trend:.6f}")
+            print(f"[EV] RANGE: trades={self.trade_metrics.range_win_count + self.trade_metrics.range_loss_count} EV={ev_range:.6f}")
             
             if is_warmup_phase:
-                # Warm-up period: BYPASS EV filtering completely
-                print(f"[Agent] EV BYPASSED: insufficient trade history ({total_trades}/{min_trades_for_ev})")
+                # Warm-up period: BYPASS EV filtering completely for this regime
+                print(f"[EV] {regime_name} BYPASSED: insufficient trades ({regime_trades}/{min_trades_for_ev})")
                 print(f"[Agent] Warm-up mode: allowing trades based on signal logic only")
                 print(f"[Agent] WARMUP MODE: size forced to SMALL")
             else:
-                # Normal operation: Apply EV filtering
-                if ev <= 0:
-                    print(f"[Agent] HOLD: Negative Expected Value EV={ev:.6f}")
+                # Normal operation: Apply regime-specific EV filtering
+                if active_ev < 0:
+                    print(f"[EV] {regime_name} BLOCKED: EV={active_ev:.6f}")
                     return "HOLD"
-                print(f"[Agent] EV ACTIVE: EV={ev:.6f}, decision gated")
+                print(f"[EV] {regime_name} ACTIVE: EV={active_ev:.6f}, decision gated")
             
             # Step 2: Warm-up Early Loss Protection
             self._check_warmup_loss_protection()
             
             # Step 2.5: RANGE Regime Override (BEFORE alignment checks)
             if regime == MarketRegime.RANGE.value and not is_warmup_phase:
-                # Calculate dynamic threshold early (needed for override logic)
+                # Calculate dynamic threshold with volatility compression (needed for override logic)
                 threshold_multiplier = 1.5  # Same as used in hybrid logic
-                dynamic_threshold = threshold_multiplier * volatility_fast
+                
+                # Apply volatility-aware compression
+                volatility_factor = max(volatility_fast, 0.00005)
+                compression = 1.0
+                if volatility_fast < 0.00008:
+                    compression = 0.5   # more aggressive trading in quiet markets
+                elif volatility_fast < 0.00012:
+                    compression = 0.75
+                
+                regime_multiplier = 1.0
+                dynamic_threshold = volatility_factor * threshold_multiplier * regime_multiplier * compression
+                dynamic_threshold = max(dynamic_threshold, 0.00005)
                 
                 # Check for strong counter-trend conditions
                 signals_opposite = (prediction_fast * prediction_slow) < 0  # Fast and slow opposite signs
@@ -755,9 +870,9 @@ class AgentAdapter:
             if base_decision == "HOLD":
                 return "HOLD"
             
-            # Step 6: Position Sizing based on confidence, EV, regime, cooldown, trend, and warm-up rules
+            # Step 6: Position Sizing based on confidence, regime-specific EV, regime, cooldown, trend, and warm-up rules
             position_size = self._calculate_position_size(
-                confidence, ev, regime, cooldown_factor, trend_strength, 
+                confidence, active_ev, regime, cooldown_factor, trend_strength, 
                 is_warmup_phase  # Pass warm-up phase flag
             )
             
@@ -776,7 +891,7 @@ class AgentAdapter:
                 self.last_signal_prediction = prediction_fast
                 self.last_signal_time = current_time
             
-            print(f"[Agent] V3 Decision: {final_decision} (EV={ev:.6f}, cooldown={cooldown_factor:.2f})")
+            print(f"[Agent] V3 Decision: {final_decision} ({regime_name} EV={active_ev:.6f}, cooldown={cooldown_factor:.2f})")
             return final_decision
             
         except Exception as e:
@@ -865,9 +980,20 @@ class AgentAdapter:
         """
         print(f"[Agent Debug] === ENHANCED HYBRID DECISION LOGIC ===")
         
-        # Adaptive thresholds based on volatility
+        # Adaptive thresholds based on volatility with compression
         threshold_multiplier = 1.5  # tunable parameter
-        dynamic_threshold = threshold_multiplier * volatility_fast
+        
+        # Apply volatility-aware compression
+        volatility_factor = max(volatility_fast, 0.00005)
+        compression = 1.0
+        if volatility_fast < 0.00008:
+            compression = 0.5   # more aggressive trading in quiet markets
+        elif volatility_fast < 0.00012:
+            compression = 0.75
+        
+        regime_multiplier = 1.0
+        dynamic_threshold = volatility_factor * threshold_multiplier * regime_multiplier * compression
+        dynamic_threshold = max(dynamic_threshold, 0.00005)
         
         # REMOVED: Momentum weighting boost - now using momentum as confirmation filter only
         momentum_weight = 0.5
@@ -1025,8 +1151,16 @@ class AgentAdapter:
         if threshold_boost > 0:
             print(f"[Agent Debug] Trade gating boost: +{threshold_boost} applied (new multiplier: {threshold_multiplier})")
         
-        # Calculate dynamic threshold
-        dynamic_threshold = threshold_multiplier * volatility_fast
+        # Calculate dynamic threshold with volatility compression
+        volatility_factor = max(volatility_fast, 0.00005)
+        compression = 1.0
+        if volatility_fast < 0.00008:
+            compression = 0.5   # more aggressive trading in quiet markets
+        elif volatility_fast < 0.00012:
+            compression = 0.75
+        
+        dynamic_threshold = threshold_multiplier * volatility_factor * compression
+        dynamic_threshold = max(dynamic_threshold, 0.00005)
         
         # REMOVED: Momentum-adjusted prediction - using raw prediction with momentum confirmation only
         adjusted_prediction = prediction_fast  # No momentum boost
@@ -1043,8 +1177,37 @@ class AgentAdapter:
             return "BUY"
         elif prediction_fast < -dynamic_threshold and trend_strength > 0.001 and momentum_confirmed:
             return "SELL"
-        else:
-            return "HOLD"
+        
+        # RANGE TREND MODE: Allow controlled trend-following trades in RANGE regime
+        if regime == MarketRegime.RANGE.value:
+            aligned = (prediction_fast * prediction_slow) > 0
+            strong_signal = abs(prediction_fast) > dynamic_threshold * 1.5
+            momentum_ok = abs(momentum_fast) > 0
+            confidence_ok = confidence > 0.6
+            
+            print(f"[Agent Debug] RANGE TREND MODE CHECK:")
+            print(f"  Aligned: {aligned}")
+            print(f"  Strong signal: {strong_signal} (pred={abs(prediction_fast):.6f} > {dynamic_threshold * 1.5:.6f})")
+            print(f"  Momentum OK: {momentum_ok}")
+            print(f"  Confidence OK: {confidence_ok}")
+            
+            if aligned and strong_signal and momentum_ok and confidence_ok:
+                print(f"[Agent] RANGE TREND MODE: aligned signal accepted")
+                if prediction_fast > 0:
+                    return "BUY_SMALL"
+                else:
+                    return "SELL_SMALL"
+            else:
+                if not aligned:
+                    print(f"[Agent] RANGE TREND MODE: blocked (reason=signals_not_aligned)")
+                elif not strong_signal:
+                    print(f"[Agent] RANGE TREND MODE: blocked (reason=weak_signal: {abs(prediction_fast):.6f} <= {dynamic_threshold * 1.5:.6f})")
+                elif not momentum_ok:
+                    print(f"[Agent] RANGE TREND MODE: blocked (reason=no_momentum: {momentum_fast:.6f})")
+                else:
+                    print(f"[Agent] RANGE TREND MODE: blocked (reason=low_confidence: {confidence:.3f})")
+        
+        return "HOLD"
     
     def _check_warmup_loss_protection(self):
         """
@@ -1224,10 +1387,10 @@ class AgentAdapter:
 
 
 class ResearchAdapter:
-    """Adapter for AI Research Platform."""
+    """Adapter for AI Research Platform with logging fail-safe system."""
     
     def __init__(self):
-        """Initialize the research adapter."""
+        """Initialize the research adapter with fail-safe logging."""
         try:
             # Initialize with real experiment runner
             self.experiment_runner = ExperimentRunner()
@@ -1244,7 +1407,11 @@ class ResearchAdapter:
             self.signal_quality_count: Dict[str, int] = {'BUY': 0, 'SELL': 0, 'HOLD': 0, 'WEAK_BUY': 0, 'WEAK_SELL': 0}
             self.total_signals: int = 0
             
-            print("[Research] Initialized with real research components")
+            # Logging fail-safe parameters
+            self.logging_enabled = True
+            self.experiment_logging_enabled = True
+            
+            print("[Research] Initialized with real research components and fail-safe logging")
         except Exception as e:
             print(f"[Research] Initialization error: {e}")
             # Fallback to minimal initialization
@@ -1261,6 +1428,11 @@ class ResearchAdapter:
             self.trend_alignments: List[bool] = []  # Track when fast & slow signals align
             self.signal_quality_count: Dict[str, int] = {'BUY': 0, 'SELL': 0, 'HOLD': 0, 'WEAK_BUY': 0, 'WEAK_SELL': 0}
             self.total_signals: int = 0
+            
+            # Logging fail-safe parameters (fallback)
+            self.logging_enabled = True
+            self.experiment_logging_enabled = False  # Disable experiment logging on error
+            print("[Research] Fallback mode: experiment logging disabled")
     
     def compute_reward(self, previous_decision: str, previous_price: float, current_price: float, 
                       prediction: float = 0.0, confidence: float = 1.0) -> float:
@@ -1358,9 +1530,49 @@ class ResearchAdapter:
         
         return reward
     
+    def compute_reward_only(self, decision: str, signal: Dict[str, Any]) -> Optional[float]:
+        """
+        Compute reward only without any logging - used for minimal logging mode.
+        
+        Args:
+            decision: The decision made (BUY, SELL, HOLD)
+            signal: The processed signal that led to decision
+            
+        Returns:
+            Computed reward for EV tracking, or None if computation fails
+        """
+        try:
+            if not self.logging_enabled:
+                return None
+                
+            # Extract current price from signal
+            current_price = signal.get('features', {}).get('price_change', 0) + 100  # Convert back to absolute price
+            
+            # Reinforcement learning: compute reward for previous decision
+            reward = 0.0
+            if self.last_price is not None and self.last_decision is not None:
+                # Use combined prediction for reward calculation
+                prediction_fast = signal.get('prediction_fast', 0.0)
+                prediction_slow = signal.get('prediction_slow', 0.0)
+                combined_prediction = (prediction_fast + prediction_slow) / 2.0
+                confidence = signal.get('confidence', 1.0)
+                reward = self.compute_reward(self.last_decision, self.last_price, current_price, combined_prediction, confidence)
+                self.total_reward += reward
+                self.reward_history.append(reward)
+            
+            # Store current decision and price for next step
+            self.last_price = current_price
+            self.last_decision = decision
+            
+            return reward if self.last_price is not None and self.last_decision is not None else None
+            
+        except Exception as e:
+            print(f"[Logging Warning] Reward computation failed: {e}")
+            return None
+    
     def log(self, decision: str, signal: Dict[str, Any]) -> Optional[float]:
         """
-        Log a decision and its corresponding signal.
+        Log a decision and its corresponding signal with comprehensive fail-safe handling.
         
         Args:
             decision: The decision made (BUY, SELL, HOLD)
@@ -1370,6 +1582,10 @@ class ResearchAdapter:
             Computed reward for EV tracking, or None if no reward computed
         """
         try:
+            if not self.logging_enabled:
+                print("[Logging Warning] Logging disabled")
+                return None
+                
             print(f"[Research] Logging decision: {decision}")
             
             # Extract dual timescale signal data
@@ -1421,8 +1637,8 @@ class ResearchAdapter:
             
             self.decisions_log.append(log_entry)
             
-            # Try to log with real experiment runner
-            if self.experiment_runner:
+            # Try to log with real experiment runner (with fail-safe)
+            if self.experiment_runner and self.experiment_logging_enabled:
                 try:
                     # Create a simple experiment config for logging
                     from ai_research_platform.experiments.experiment_config import ExperimentConfig
@@ -1437,14 +1653,21 @@ class ResearchAdapter:
                     experiment_id = experiment_result.get('experiment_id', 'unknown')
                     print(f"[Research] Logged to experiment: {experiment_id}")
                 except Exception as research_error:
-                    print(f"[Research] Experiment logging error: {research_error}")
+                    print(f"[Logging Warning] Experiment logging failed: {research_error}")
+                    # Disable experiment logging after failure to prevent repeated errors
+                    self.experiment_logging_enabled = False
+                    print("[Logging Warning] Experiment logging disabled due to repeated failures")
             
             # Return computed reward for EV tracking
             return reward if self.last_price is not None and self.last_decision is not None else None
             
         except Exception as e:
-            print(f"[Research] Logging error: {e}")
-            return None
+            print(f"[Logging Warning] Logging error: {e}")
+            # Try to at least compute reward for EV tracking
+            try:
+                return self.compute_reward_only(decision, signal)
+            except:
+                return None
     
     def _simulate_outcome(self, decision: str, signal: Dict[str, Any]) -> str:
         """
