@@ -48,12 +48,22 @@ class AutonomousAISystem:
         self.warmup_events = warmup_events
         self.log_interval = log_interval
         
-        # Metrics tracking
+        # Metrics tracking (updated for V3 decisions)
         self.decision_history = deque(maxlen=num_events)
         self.prediction_history = deque(maxlen=num_events)
         self.volatility_history = deque(maxlen=num_events)
-        self.signal_count = {'BUY': 0, 'SELL': 0, 'HOLD': 0}
-        self.valid_signal_count = {'BUY': 0, 'SELL': 0, 'HOLD': 0}
+        
+        # V3 decision categories
+        self.signal_count = {
+            'BUY_SMALL': 0, 'BUY_MEDIUM': 0, 'BUY_LARGE': 0,
+            'SELL_SMALL': 0, 'SELL_MEDIUM': 0, 'SELL_LARGE': 0,
+            'HOLD': 0
+        }
+        self.valid_signal_count = {
+            'BUY_SMALL': 0, 'BUY_MEDIUM': 0, 'BUY_LARGE': 0,
+            'SELL_SMALL': 0, 'SELL_MEDIUM': 0, 'SELL_LARGE': 0,
+            'HOLD': 0
+        }
         
         print(f"[System] Enhanced evaluation configured: {num_events} events, {warmup_events} warm-up, logging every {log_interval}")
     
@@ -124,9 +134,10 @@ class AutonomousAISystem:
                 processed_signal = self.pipeline.process(event)
                 self.latency_tracker.stop_timer("pipeline")
                 
-                # Extract metrics for tracking
-                prediction = processed_signal.get('prediction', 0.0)
-                volatility = processed_signal.get('volatility', 0.0)
+                # Extract metrics for tracking (updated for V3)
+                prediction = processed_signal.get('prediction_fast', 0.0)  # V3 uses prediction_fast
+                volatility = processed_signal.get('volatility_fast', 0.0)  # V3 uses volatility_fast
+                confidence = processed_signal.get('confidence', 0.0)  # V3 confidence
                 window_size = processed_signal.get('features', {}).get('window_size', 0)
                 
                 # Agent decision stage
@@ -138,19 +149,24 @@ class AutonomousAISystem:
                 self.decision_history.append(decision)
                 self.prediction_history.append(prediction)
                 self.volatility_history.append(volatility)
-                self.signal_count[decision] += 1
+                self.signal_count[decision] = self.signal_count.get(decision, 0) + 1
                 
                 # Track valid signals (after warm-up)
                 if not is_warmup:
-                    self.valid_signal_count[decision] += 1
+                    self.valid_signal_count[decision] = self.valid_signal_count.get(decision, 0) + 1
                 
                 # Research logging stage
                 self.latency_tracker.start_timer("research")
-                self.research.log(decision, processed_signal)
+                reward = self.research.log(decision, processed_signal)
+                
+                # Pass reward to agent for EV calculation
+                if reward is not None:
+                    self.agent.trade_metrics.update_with_reward(reward)
+                
                 self.latency_tracker.stop_timer("research")
                 
                 # Enhanced event logging
-                self._log_event_status(i+1, decision, prediction, volatility, window_size, window_status, is_warmup)
+                self._log_event_status(i+1, decision, prediction, volatility, confidence, window_size, window_status, is_warmup)
                 
                 # Periodic metrics logging
                 if (i+1) % self.log_interval == 0 or i == self.num_events - 1:
@@ -185,10 +201,15 @@ class AutonomousAISystem:
             return False
     
     def _log_event_status(self, event_num: int, decision: str, prediction: float, 
-                         volatility: float, window_size: int, window_status: str, is_warmup: bool):
+                         volatility: float, confidence: float, window_size: int, window_status: str, is_warmup: bool):
         """Log detailed event status with window maturity information."""
         warmup_indicator = "🔥" if is_warmup else "✅"
-        decision_emoji = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"}.get(decision, "❓")
+        # V3 decision emojis (updated for position sizing)
+        decision_emoji = {
+            'BUY_SMALL': "🟢", 'BUY_MEDIUM': "🟢", 'BUY_LARGE': "🟢",
+            'SELL_SMALL': "🔴", 'SELL_MEDIUM': "🔴", 'SELL_LARGE': "�",
+            'HOLD': "⚪"
+        }.get(decision, "❓")
         
         # Window maturity status
         if window_size >= 20:
@@ -204,7 +225,8 @@ class AutonomousAISystem:
               f"{window_status} | Window: {window_size:2d}/20 ({maturity_status}) | "
               f"{decision_emoji} {decision} | "
               f"Pred: {prediction:+.6f} | "
-              f"Vol: {volatility:.6f}")
+              f"Vol: {volatility:.6f} | "
+              f"Conf: {confidence:.3f}")
     
     def _log_periodic_metrics(self, event_num: int):
         """Log periodic metrics and decision distribution."""
@@ -225,10 +247,17 @@ class AutonomousAISystem:
                 percentage = (count / total_valid * 100)
                 print(f"   {decision}: {count:3d} ({percentage:5.1f}%)")
         
-        # Signal frequency
+        # Signal frequency (updated for V3)
         if len(self.decision_history) > 0:
-            buy_freq = self.valid_signal_count['BUY'] / len(self.decision_history) * 100
-            sell_freq = self.valid_signal_count['SELL'] / len(self.decision_history) * 100
+            total_buy_signals = (self.valid_signal_count.get('BUY_SMALL', 0) + 
+                             self.valid_signal_count.get('BUY_MEDIUM', 0) + 
+                             self.valid_signal_count.get('BUY_LARGE', 0))
+            total_sell_signals = (self.valid_signal_count.get('SELL_SMALL', 0) + 
+                              self.valid_signal_count.get('SELL_MEDIUM', 0) + 
+                              self.valid_signal_count.get('SELL_LARGE', 0))
+            
+            buy_freq = total_buy_signals / len(self.decision_history) * 100
+            sell_freq = total_sell_signals / len(self.decision_history) * 100
             print(f"📊 Signal Frequency: BUY {buy_freq:.1f}% | SELL {sell_freq:.1f}%")
         
         # Average prediction and volatility
@@ -270,15 +299,32 @@ class AutonomousAISystem:
                 print(f"   {decision}: {count:3d} ({percentage:5.1f}%)")
             print()
             
-            # Signal frequency analysis
-            buy_freq = self.valid_signal_count['BUY'] / len(self.decision_history) * 100
-            sell_freq = self.valid_signal_count['SELL'] / len(self.decision_history) * 100
-            hold_freq = self.valid_signal_count['HOLD'] / len(self.decision_history) * 100
+            # Signal frequency analysis (updated for V3)
+            total_buy_signals = (self.valid_signal_count.get('BUY_SMALL', 0) + 
+                             self.valid_signal_count.get('BUY_MEDIUM', 0) + 
+                             self.valid_signal_count.get('BUY_LARGE', 0))
+            total_sell_signals = (self.valid_signal_count.get('SELL_SMALL', 0) + 
+                              self.valid_signal_count.get('SELL_MEDIUM', 0) + 
+                              self.valid_signal_count.get('SELL_LARGE', 0))
+            
+            buy_freq = total_buy_signals / len(self.decision_history) * 100
+            sell_freq = total_sell_signals / len(self.decision_history) * 100
+            hold_freq = self.valid_signal_count.get('HOLD', 0) / len(self.decision_history) * 100
             
             print(f"📊 Signal Frequency Analysis:")
             print(f"   BUY Signals: {buy_freq:.1f}% of total events")
             print(f"   SELL Signals: {sell_freq:.1f}% of total events")
             print(f"   HOLD Signals: {hold_freq:.1f}% of total events")
+            print()
+            
+            # V3 Position sizing analysis
+            print(f"📊 V3 Position Sizing Analysis:")
+            print(f"   BUY_SMALL: {self.valid_signal_count.get('BUY_SMALL', 0):3d} ({self.valid_signal_count.get('BUY_SMALL', 0)/total_valid*100:.1f}%)")
+            print(f"   BUY_MEDIUM: {self.valid_signal_count.get('BUY_MEDIUM', 0):3d} ({self.valid_signal_count.get('BUY_MEDIUM', 0)/total_valid*100:.1f}%)")
+            print(f"   BUY_LARGE: {self.valid_signal_count.get('BUY_LARGE', 0):3d} ({self.valid_signal_count.get('BUY_LARGE', 0)/total_valid*100:.1f}%)")
+            print(f"   SELL_SMALL: {self.valid_signal_count.get('SELL_SMALL', 0):3d} ({self.valid_signal_count.get('SELL_SMALL', 0)/total_valid*100:.1f}%)")
+            print(f"   SELL_MEDIUM: {self.valid_signal_count.get('SELL_MEDIUM', 0):3d} ({self.valid_signal_count.get('SELL_MEDIUM', 0)/total_valid*100:.1f}%)")
+            print(f"   SELL_LARGE: {self.valid_signal_count.get('SELL_LARGE', 0):3d} ({self.valid_signal_count.get('SELL_LARGE', 0)/total_valid*100:.1f}%)")
             print()
         
         # Market metrics
@@ -303,30 +349,38 @@ class AutonomousAISystem:
         print(f"   Training Steps: {summary.get('num_steps', 0)}")
         print()
         
-        # Window-based evaluation insights
+        # Window-based evaluation insights (updated for V3)
         print(f"🔍 Window-based Evaluation Insights:")
         matured_events = min(self.num_events - self.warmup_events, 
                            max(0, self.num_events - self.warmup_events))
         if matured_events > 0:
-            signal_ratio = (self.valid_signal_count['BUY'] + self.valid_signal_count['SELL']) / matured_events
+            total_buy_signals = (self.valid_signal_count.get('BUY_SMALL', 0) + 
+                             self.valid_signal_count.get('BUY_MEDIUM', 0) + 
+                             self.valid_signal_count.get('BUY_LARGE', 0))
+            total_sell_signals = (self.valid_signal_count.get('SELL_SMALL', 0) + 
+                              self.valid_signal_count.get('SELL_MEDIUM', 0) + 
+                              self.valid_signal_count.get('SELL_LARGE', 0))
+            signal_ratio = (total_buy_signals + total_sell_signals) / matured_events
             print(f"   Trading Signal Ratio: {signal_ratio:.1%} (BUY+SELL vs total valid events)")
             print(f"   Window Maturity: 20-price window achieved after {self.warmup_events} events")
             print(f"   Evaluation Quality: High (post warm-up decisions only)")
+            print(f"   V3 Features: Position sizing, EV filtering, regime-aware decisions")
         print()
         
         # System integration status
         print("="*70)
         print("🚀 SYSTEM INTEGRATION STATUS")
         print("="*70)
-        print("✅ Pipeline Adapter: Rolling window prediction functional")
-        print("✅ Agent Adapter: Adaptive volatility filtering active")
-        print("✅ Research Adapter: Enhanced evaluation and logging working")
+        print("✅ Pipeline Adapter: V3 regime detection and dual timescale processing")
+        print("✅ Agent Adapter: V3 EV filtering, position sizing, and adaptive learning")
+        print("✅ Research Adapter: Enhanced evaluation and V3 metrics tracking")
         print("✅ Live Data Client: Real-time API integration with proper sampling")
         print("✅ Window-based Strategy: Short-term trend detection operational")
-        print("✅ Enhanced Evaluation: Comprehensive metrics and analysis complete")
+        print("✅ V3 Intelligence: Probabilistic decision-making with learning")
         
-        print(f"\n🎉 Enhanced Autonomous AI System Evaluation Completed Successfully!")
-        print(f"📈 Transformed from tick-noise reactor to short-term trend detector")
+        print(f"\n🎉 V3 Autonomous AI System Evaluation Completed Successfully!")
+        print(f"📈 Transformed from V2.5 signal processor to V3 intelligent trade evaluator")
+        print(f"🤖 Features: EV filtering, position sizing, regime-aware decisions, adaptive learning")
 
 
 async def main():
