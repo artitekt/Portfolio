@@ -87,7 +87,7 @@ class AutonomousAISystem:
             self.agent = AgentAdapter()
             
             print("   📊 Setting up Research Adapter...")
-            self.research = ResearchAdapter()
+            self.research = ResearchAdapter(agent_adapter=self.agent)  # Pass AgentAdapter for V4 cost integration
             
             print("   🌐 Setting up Live Data Client...")
             self.live_client = LiveDataClient()
@@ -149,11 +149,14 @@ class AutonomousAISystem:
                 
                 # Agent decision stage
                 self.latency_tracker.start_timer("agent")
-                decision = self.agent.decide(processed_signal)
+                decision_result = self.agent.decide(processed_signal)
                 self.latency_tracker.stop_timer("agent")
                 
+                # Extract final action for V3.7 compatibility
+                decision = decision_result.get('final_action', 'HOLD')
+                
                 # Track metrics
-                self.decision_history.append(decision)
+                self.decision_history.append(decision_result)
                 self.prediction_history.append(prediction)
                 self.volatility_history.append(volatility)
                 self.signal_count[decision] = self.signal_count.get(decision, 0) + 1

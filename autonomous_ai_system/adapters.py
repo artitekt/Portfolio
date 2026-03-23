@@ -41,6 +41,44 @@ except ImportError as e:
     sys.exit(1)
 
 
+# V4 Live Trading Realism Layer Constants
+FEE_RATE = 0.0004  # 0.04% per trade (Binance-like)
+SLIPPAGE_FACTOR = 0.5  # Slippage = volatility * 0.5
+MIN_EDGE_THRESHOLD = 2 * FEE_RATE  # Minimum edge to overcome transaction costs
+LATENCY_DELAY_TICKS = 1  # Execute on next tick (not current)
+POSITION_DECAY_STEPS = 5  # Force exit if unprofitable after N steps
+POSITION_DECAY_PENALTY = 0.5  # Reduce reward weight for decayed positions
+
+@dataclass
+class PositionTracker:
+    """Track open positions for V4 realism layer"""
+    entry_price: Optional[float] = None
+    entry_time: Optional[datetime] = None
+    position_type: Optional[str] = None  # "BUY" or "SELL"
+    unprofitable_steps: int = 0
+    total_cost: float = 0.0
+    
+    def is_open(self) -> bool:
+        return self.entry_price is not None
+    
+    def open_position(self, price: float, position_type: str, cost: float):
+        self.entry_price = price
+        self.entry_time = datetime.now()
+        self.position_type = position_type
+        self.unprofitable_steps = 0
+        self.total_cost = cost
+    
+    def close_position(self) -> Tuple[float, int]:
+        """Returns (total_cost, unprofitable_steps) and resets"""
+        cost = self.total_cost
+        steps = self.unprofitable_steps
+        self.entry_price = None
+        self.entry_time = None
+        self.position_type = None
+        self.unprofitable_steps = 0
+        self.total_cost = 0.0
+        return cost, steps
+
 class MarketRegime(Enum):
     """Market regime classification"""
     RANGE = "RANGE"
@@ -285,6 +323,16 @@ class PositionSize(Enum):
     SMALL = "SMALL"
     MEDIUM = "MEDIUM"
     LARGE = "LARGE"
+
+class FinalAction(Enum):
+    """V3.7 Final Action Space - Clean executable actions only"""
+    BUY_SMALL = "BUY_SMALL"
+    BUY_MEDIUM = "BUY_MEDIUM"
+    BUY_LARGE = "BUY_LARGE"
+    SELL_SMALL = "SELL_SMALL"
+    SELL_MEDIUM = "SELL_MEDIUM"
+    SELL_LARGE = "SELL_LARGE"
+    HOLD = "HOLD"
 
 @dataclass
 class CooldownTracker:
@@ -662,10 +710,10 @@ class PipelineAdapter:
 
 
 class AgentAdapter:
-    """Adapter for AI Agent Framework."""
+    """Adapter for AI Agent Framework with V4 Live Trading Realism Layer."""
     
     def __init__(self, volatility_multiplier: float = 1.5):
-        """Initialize the agent adapter with V3 intelligence features.
+        """Initialize the agent adapter with V3 intelligence features and V4 realism.
         
         Args:
             volatility_multiplier: Multiplier 'k' for adaptive volatility floor
@@ -688,6 +736,12 @@ class AgentAdapter:
         self.cooldown_tracker = CooldownTracker()
         self.last_signal_prediction: Optional[float] = None
         self.last_signal_time: Optional[datetime] = None
+        
+        # V4 Live Trading Realism Layer
+        self.position_tracker = PositionTracker()
+        self.pending_execution_price: Optional[float] = None  # For latency simulation
+        self.total_trading_costs: float = 0.0
+        self.v4_cost_adjustment_enabled: bool = True  # Can be toggled for A/B testing
         
         # Trade gating for overtrading prevention
         self.recent_signals: List[bool] = []  # Track recent signal accuracy (True=correct, False=wrong)
@@ -713,6 +767,19 @@ class AgentAdapter:
             MarketRegime.BREAKOUT.value: (0.15, 0.25)  # 15-25% for BREAKOUT (same as TREND)
         }
         
+        # V3.5 GLOBAL SELECTIVITY CONTROL
+        self.target_trade_rate = 0.10  # 10% max trade frequency
+        self.trade_budget_window = 50  # Track last 50 events for trade rate
+        self.recent_trades: List[bool] = []  # Track if each event resulted in a trade
+        self.selectivity_threshold_boost = 1.0  # Dynamic threshold multiplier for selectivity
+        
+        # V3.5.1 SELECTIVITY REBALANCE: Buy/Sell balance tracking
+        self.buy_sell_window = 50  # Track last 50 trades for balance
+        self.recent_buy_sell_trades: List[str] = []  # Track BUY/SELL decisions
+        self.dominant_side_threshold = 0.7  # 70% imbalance threshold
+        self.bias_correction_active = False
+        self.recovery_mode_active = False
+        
         # Learning parameters (adaptive)
         self.k_threshold = volatility_multiplier  # Adaptive threshold multiplier
         self.momentum_weight = 0.5  # Momentum signal weight
@@ -722,16 +789,207 @@ class AgentAdapter:
         print(f"  Adaptive volatility floor: k={volatility_multiplier}")
         print(f"  Trade metrics: EV={self.trade_metrics.expected_value():.6f}")
         print(f"  Cooldown window: {self.cooldown_tracker.cooldown_window.total_seconds()}s")
+        print(f"[V4] Live Trading Realism Layer enabled: {self.v4_cost_adjustment_enabled}")
+        print(f"[V4] Transaction cost rate: {FEE_RATE:.4f} (0.04% per trade)")
+        print(f"[V4] Minimum edge threshold: {MIN_EDGE_THRESHOLD:.6f}")
     
-    def decide(self, signal: Dict[str, Any]) -> str:
+    def _calculate_v4_trading_costs(self, current_price: float, volatility: float, decision: str) -> Tuple[float, float, float]:
         """
-        V3 Enhanced decision making with Expected Value calculation and position sizing.
+        V4: Calculate comprehensive trading costs including fees and slippage.
+        
+        Args:
+            current_price: Current market price
+            volatility: Current volatility for slippage calculation
+            decision: Trading decision ("BUY", "SELL", or "HOLD")
+            
+        Returns:
+            Tuple of (total_cost, fee_cost, slippage_cost)
+        """
+        if decision == "HOLD":
+            return 0.0, 0.0, 0.0
+        
+        # Calculate transaction costs (entry + exit)
+        fee_cost = 2 * FEE_RATE  # 0.08% total for round trip
+        
+        # Calculate slippage based on volatility
+        slippage_cost = volatility * SLIPPAGE_FACTOR
+        
+        # Total cost as percentage of price
+        total_cost = fee_cost + slippage_cost
+        
+        print(f"[V4] Trading Costs: fee={fee_cost:.6f}, slippage={slippage_cost:.6f}, total={total_cost:.6f}")
+        
+        return total_cost, fee_cost, slippage_cost
+    
+    def _calculate_v4_adjusted_entry_price(self, current_price: float, volatility: float, decision: str) -> float:
+        """
+        V4: Calculate entry price adjusted for slippage.
+        
+        Args:
+            current_price: Current market price
+            volatility: Current volatility for slippage calculation
+            decision: Trading decision ("BUY" or "SELL")
+            
+        Returns:
+            Adjusted entry price accounting for slippage
+        """
+        slippage = volatility * SLIPPAGE_FACTOR
+        
+        if decision == "BUY":
+            # Buy at higher price due to slippage
+            adjusted_price = current_price * (1 + slippage)
+        elif decision == "SELL":
+            # Sell at lower price due to slippage
+            adjusted_price = current_price * (1 - slippage)
+        else:
+            adjusted_price = current_price
+        
+        print(f"[V4] Adjusted Entry: {decision} @ {adjusted_price:.6f} (slippage={slippage:.6f})")
+        
+        return adjusted_price
+    
+    def _check_v4_minimum_edge(self, expected_return: float, total_cost: float) -> bool:
+        """
+        V4: Check if expected return exceeds minimum edge threshold.
+        
+        Args:
+            expected_return: Expected return from signal
+            total_cost: Total trading costs (fees + slippage)
+            
+        Returns:
+            True if edge is sufficient, False otherwise
+        """
+        minimum_edge = max(MIN_EDGE_THRESHOLD, total_cost)
+        edge_sufficient = expected_return > minimum_edge
+        
+        print(f"[V4] Edge Check: expected={expected_return:.6f}, minimum={minimum_edge:.6f}, sufficient={edge_sufficient}")
+        
+        return edge_sufficient
+    
+    def _update_v4_position_decay(self, current_price: float) -> Tuple[bool, float]:
+        """
+        V4: Update position decay tracking and check for forced exit.
+        
+        Args:
+            current_price: Current market price
+            
+        Returns:
+            Tuple of (should_force_exit, decay_penalty)
+        """
+        if not self.position_tracker.is_open():
+            return False, 1.0
+        
+        # Calculate current PnL
+        entry_price = self.position_tracker.entry_price
+        position_type = self.position_tracker.position_type
+        
+        if position_type == "BUY":
+            pnl_pct = (current_price - entry_price) / entry_price
+        else:  # SELL
+            pnl_pct = (entry_price - current_price) / entry_price
+        
+        # Check if position is unprofitable
+        if pnl_pct <= 0:
+            self.position_tracker.unprofitable_steps += 1
+        else:
+            self.position_tracker.unprofitable_steps = 0  # Reset on profitable step
+        
+        # Check for forced exit
+        should_force_exit = self.position_tracker.unprofitable_steps >= POSITION_DECAY_STEPS
+        decay_penalty = 1.0
+        
+        if should_force_exit:
+            decay_penalty = POSITION_DECAY_PENALTY
+            print(f"[V4] Position Decay: Force exit after {self.position_tracker.unprofitable_steps} unprofitable steps")
+        elif self.position_tracker.unprofitable_steps > 0:
+            print(f"[V4] Position Decay: {self.position_tracker.unprofitable_steps}/{POSITION_DECAY_STEPS} unprofitable steps")
+        
+        return should_force_exit, decay_penalty
+    
+    def _collapse_hybrid_state(self, base_decision: str, size: str) -> FinalAction:
+        """
+        V3.7: Collapse hybrid states into clean final actions.
+        
+        Args:
+            base_decision: Base decision ("BUY", "SELL", or "HOLD")
+            size: Position size ("SMALL", "MEDIUM", "LARGE")
+            
+        Returns:
+            FinalAction enum value representing clean executable action
+        """
+        if base_decision == "HOLD":
+            return FinalAction.HOLD
+        
+        # Map hybrid states to clean actions
+        action_size_map = {
+            ("BUY", "SMALL"): FinalAction.BUY_SMALL,
+            ("BUY", "MEDIUM"): FinalAction.BUY_MEDIUM,
+            ("BUY", "LARGE"): FinalAction.BUY_LARGE,
+            ("SELL", "SMALL"): FinalAction.SELL_SMALL,
+            ("SELL", "MEDIUM"): FinalAction.SELL_MEDIUM,
+            ("SELL", "LARGE"): FinalAction.SELL_LARGE,
+        }
+        
+        return action_size_map.get((base_decision, size), FinalAction.HOLD)
+    
+    def _get_position_size(self, score: float) -> str:
+        """
+        V3.7: Single source of truth for position sizing based on score.
+        
+        Args:
+            score: Final decision score after all risk modifiers
+            
+        Returns:
+            Position size string: "SMALL", "MEDIUM", or "LARGE"
+        """
+        if score < 0.4:
+            return "SMALL"
+        elif score < 0.7:
+            return "MEDIUM"
+        else:
+            return "LARGE"
+    
+    def _create_final_decision(self, base_decision: str, size: str, confidence: float, score: float) -> Dict[str, Any]:
+        """
+        V3.7: Create clean final decision format.
+        
+        Args:
+            base_decision: Base decision ("BUY", "SELL", or "HOLD")
+            size: Position size ("SMALL", "MEDIUM", "LARGE")
+            confidence: Decision confidence score
+            score: Final decision score after risk modifiers
+            
+        Returns:
+            Dictionary with clean decision format
+        """
+        # Collapse to clean action
+        final_action = self._collapse_hybrid_state(base_decision, size)
+        
+        # Extract action and size for clean format
+        if final_action == FinalAction.HOLD:
+            action = "HOLD"
+            size_clean = "NONE"
+        else:
+            action = "BUY" if "BUY" in final_action.value else "SELL"
+            size_clean = size
+        
+        return {
+            "action": action,
+            "size": size_clean,
+            "confidence": confidence,
+            "score": score,
+            "final_action": final_action.value
+        }
+    
+    def decide(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        V3.7 Enhanced decision making with clean execution normalization.
         
         Args:
             signal: Dictionary with processed features and V3 regime data
             
         Returns:
-            Decision string: BUY_SMALL/MEDIUM/LARGE, SELL_SMALL/MEDIUM/LARGE, or HOLD
+            Dictionary with clean decision format: action, size, confidence, score, final_action
         """
         try:
             current_time = datetime.now()
@@ -785,23 +1043,30 @@ class AgentAdapter:
             
             if is_warmup_phase:
                 # Warm-up period: BYPASS EV filtering completely for this regime
+                ev_override_triggered = False  # Initialize for consistency
                 print(f"[EV] {regime_name} BYPASSED: insufficient trades ({regime_trades}/{min_trades_for_ev})")
                 print(f"[Agent] Warm-up mode: allowing trades based on signal logic only")
                 print(f"[Agent] WARMUP MODE: size forced to SMALL")
             else:
-                # Normal operation: Apply regime-specific EV filtering
+                # Normal operation: Apply regime-specific EV filtering with V3.5.1 override
+                ev_override_triggered = False
                 if active_ev < 0:
-                    print(f"[EV] {regime_name} BLOCKED: EV={active_ev:.6f}")
-                    return "HOLD"
+                    # V3.5.1 SOFTEN EV FILTER: Allow high-confidence trades despite negative EV
+                    if confidence >= 0.8:
+                        ev_override_triggered = True
+                        print(f"[EV OVERRIDE] High-confidence trade allowed despite negative EV: EV={active_ev:.6f}, confidence={confidence:.3f}")
+                    else:
+                        print(f"[EV] {regime_name} BLOCKED: EV={active_ev:.6f}, confidence={confidence:.3f} < 0.8")
+                        return self._create_final_decision("HOLD", "NONE", confidence, 0.0)
                 print(f"[EV] {regime_name} ACTIVE: EV={active_ev:.6f}, decision gated")
             
             # Step 2: Warm-up Early Loss Protection
             self._check_warmup_loss_protection()
             
-            # Step 2.5: RANGE Regime Override (BEFORE alignment checks)
+            # Step 2.5: RANGE Regime Override V3.1 (BEFORE alignment checks)
             if regime == MarketRegime.RANGE.value and not is_warmup_phase:
-                # Calculate dynamic threshold with volatility compression (needed for override logic)
-                threshold_multiplier = 1.5  # Same as used in hybrid logic
+                # Calculate dynamic threshold with V3.1 optimizations
+                threshold_multiplier = 1.6  # V3.1 reduced threshold for RANGE
                 
                 # Apply volatility-aware compression
                 volatility_factor = max(volatility_fast, 0.00005)
@@ -815,36 +1080,36 @@ class AgentAdapter:
                 dynamic_threshold = volatility_factor * threshold_multiplier * regime_multiplier * compression
                 dynamic_threshold = max(dynamic_threshold, 0.00005)
                 
-                # Check for strong counter-trend conditions
+                # V3.1: Check for counter-trend conditions with relaxed requirements
                 signals_opposite = (prediction_fast * prediction_slow) < 0  # Fast and slow opposite signs
-                signal_strong = abs(prediction_fast) > (dynamic_threshold * 1.5)  # Strong signal requirement
+                signal_strong = abs(prediction_fast) > dynamic_threshold  # V3.1: reduced strength requirement
                 momentum_confirms = (prediction_fast * momentum_fast) > 0  # Momentum confirms fast direction
-                confidence_high = confidence > 0.7  # High confidence requirement
+                confidence_ok = confidence > 0.6  # V3.1: reduced confidence floor
                 
-                print(f"[Agent Debug] RANGE OVERRIDE CHECK:")
+                print(f"[Agent Debug] RANGE OVERRIDE V3.1 CHECK:")
                 print(f"  Signals opposite: {signals_opposite}")
-                print(f"  Signal strong: {signal_strong} (pred={abs(prediction_fast):.6f} > {dynamic_threshold * 1.5:.6f})")
+                print(f"  Signal strong: {signal_strong} (pred={abs(prediction_fast):.6f} > {dynamic_threshold:.6f})")
                 print(f"  Momentum confirms: {momentum_confirms}")
-                print(f"  Confidence high: {confidence_high}")
+                print(f"  Confidence OK: {confidence_ok} (conf={confidence:.3f} > 0.6)")
                 
-                if signals_opposite and signal_strong and momentum_confirms and confidence_high:
-                    # Strong counter-trend with momentum confirmation - ALLOW TRADE
+                if signals_opposite and signal_strong and momentum_confirms and confidence_ok:
+                    # V3.1: Counter-trend with momentum confirmation - ALLOW SMALL TRADE
                     if prediction_fast > 0:
-                        print(f"[Agent] RANGE OVERRIDE: strong counter-trend BUY accepted (pred={prediction_fast:.6f}, mom={momentum_fast:.6f})")
-                        return "BUY_SMALL"
+                        print(f"[Agent] RANGE OVERRIDE V3.1: counter-trend BUY_SMALL accepted (pred={prediction_fast:.6f}, mom={momentum_fast:.6f})")
+                        return self._create_final_decision("BUY", "SMALL", confidence, 0.0)
                     else:
-                        print(f"[Agent] RANGE OVERRIDE: strong counter-trend SELL accepted (pred={prediction_fast:.6f}, mom={momentum_fast:.6f})")
-                        return "SELL_SMALL"
+                        print(f"[Agent] RANGE OVERRIDE V3.1: counter-trend SELL_SMALL accepted (pred={prediction_fast:.6f}, mom={momentum_fast:.6f})")
+                        return self._create_final_decision("SELL", "SMALL", confidence, 0.0)
                 else:
                     # Log why override was blocked
                     if not signals_opposite:
-                        print(f"[Agent] RANGE OVERRIDE: blocked (reason=signals_aligned)")
+                        print(f"[Agent] RANGE OVERRIDE V3.1: blocked (reason=signals_aligned)")
                     elif not signal_strong:
-                        print(f"[Agent] RANGE OVERRIDE: blocked (reason=weak_signal: {abs(prediction_fast):.6f} <= {dynamic_threshold * 1.5:.6f})")
+                        print(f"[Agent] RANGE OVERRIDE V3.1: blocked (reason=weak_signal: {abs(prediction_fast):.6f} <= {dynamic_threshold:.6f})")
                     elif not momentum_confirms:
-                        print(f"[Agent] RANGE OVERRIDE: blocked (reason=no_momentum: pred={prediction_fast:.6f}, mom={momentum_fast:.6f})")
+                        print(f"[Agent] RANGE OVERRIDE V3.1: blocked (reason=no_momentum: pred={prediction_fast:.6f}, mom={momentum_fast:.6f})")
                     else:
-                        print(f"[Agent] RANGE OVERRIDE: blocked (reason=low_confidence: {confidence:.3f})")
+                        print(f"[Agent] RANGE OVERRIDE V3.1: blocked (reason=low_confidence: {confidence:.3f} <= 0.6)")
             
             # Step 3: Trade Gating for Overtrading Prevention
             if self.consecutive_losses >= 3:
@@ -854,49 +1119,305 @@ class AgentAdapter:
                 self.threshold_multiplier_boost = 0.0  # Reset boost when recovering
                 print(f"[Agent] Trade Gating Reset: No consecutive losses")
             
-            # Step 4: Cooldown System
+            # Step 5: V3.5 GLOBAL TRADE BUDGET CONTROL
+            # Calculate recent trade rate and adjust thresholds if needed
+            self.recent_trades.append(False)  # Will be updated to True if trade occurs
+            if len(self.recent_trades) > self.trade_budget_window:
+                self.recent_trades.pop(0)
+            
+            recent_trade_rate = sum(self.recent_trades) / len(self.recent_trades) if self.recent_trades else 0.0
+            
+            # Step 4: V3.5.1 BIAS CONTROL & RECOVERY MODE
+            
+            # V3.5.1: Check BUY/SELL balance and apply bias correction
+            bias_correction_multiplier = 1.0
+            if len(self.recent_buy_sell_trades) >= 10:  # Need at least 10 trades to assess balance
+                buy_count = sum(1 for trade in self.recent_buy_sell_trades if trade.startswith("BUY"))
+                sell_count = sum(1 for trade in self.recent_buy_sell_trades if trade.startswith("SELL"))
+                total_tracked = buy_count + sell_count
+                
+                if total_tracked > 0:
+                    buy_ratio = buy_count / total_tracked
+                    sell_ratio = sell_count / total_tracked
+                    
+                    # Check for imbalance > 70%
+                    if buy_ratio > self.dominant_side_threshold:
+                        # BUY is dominant, suppress BUY signals
+                        bias_correction_multiplier = 1.2
+                        self.bias_correction_active = True
+                        print(f"[BIAS CONTROL] Suppressing dominant BUY side: buy_ratio={buy_ratio:.2f} > {self.dominant_side_threshold}")
+                    elif sell_ratio > self.dominant_side_threshold:
+                        # SELL is dominant, suppress SELL signals
+                        bias_correction_multiplier = 1.2
+                        self.bias_correction_active = True
+                        print(f"[BIAS CONTROL] Suppressing dominant SELL side: sell_ratio={sell_ratio:.2f} > {self.dominant_side_threshold}")
+                    else:
+                        self.bias_correction_active = False
+            
+            # V3.5.1: Recovery mode for low trade rates
+            if recent_trade_rate < 0.05:  # Trade rate below 5%
+                self.recovery_mode_active = True
+                recovery_multiplier = 0.85  # Reduce thresholds to increase flow
+                print(f"[RECOVERY MODE] Trade rate too low ({recent_trade_rate:.3f} < 0.05), reducing thresholds by 15%")
+            else:
+                self.recovery_mode_active = False
+                recovery_multiplier = 1.0
+            
+            # Dynamic threshold adjustment based on trade frequency
+            if recent_trade_rate > self.target_trade_rate:
+                self.selectivity_threshold_boost *= 1.2  # Tighten thresholds
+                print(f"[SELECTIVITY] Trade rate high ({recent_trade_rate:.3f} > {self.target_trade_rate:.3f}) → tightening thresholds to {self.selectivity_threshold_boost:.3f}")
+            else:
+                # Gradually relax thresholds when under budget
+                self.selectivity_threshold_boost = max(1.0, self.selectivity_threshold_boost * 0.98)
+            
+            # Step 5: Cooldown System (V3.5 strengthened)
             cooldown_factor = self.cooldown_tracker.cooldown_factor(current_time)
             if cooldown_factor < 1.0:
                 print(f"[Agent] Cooldown Active: factor={cooldown_factor:.2f}")
             
-            # Step 5: Regime-Adjusted Decision Logic (with adjusted threshold)
+            # Step 5: Regime-Adjusted Decision Logic (with V3.1 adjusted threshold)
+            # Calculate dynamic threshold for position sizing with V3.1 RANGE optimization
+            base_threshold = 1.5  # Default base threshold
+            if regime == MarketRegime.RANGE.value:
+                base_threshold = 1.6  # V3.1 RANGE optimization
+            
+            threshold_multiplier = (base_threshold + self.threshold_multiplier_boost + self.warmup_threshold_boost) * self.selectivity_threshold_boost * bias_correction_multiplier * recovery_multiplier
+            volatility_factor = max(volatility_fast, 0.00005)
+            compression = 1.0
+            if volatility_fast < 0.00008:
+                compression = 0.5   # more aggressive trading in quiet markets
+            elif volatility_fast < 0.00012:
+                compression = 0.75
+            dynamic_threshold = threshold_multiplier * volatility_factor * compression
+            dynamic_threshold = max(dynamic_threshold, 0.00005)
+            
+            # V3.5.1: Relaxed micro-trade filter (0.8 → 0.6)
+            if abs(prediction_fast) < dynamic_threshold * 0.6:
+                print(f"[SELECTIVITY] Micro-trade blocked: pred={abs(prediction_fast):.6f} < 0.6 * threshold={dynamic_threshold * 0.6:.6f}")
+                return self._create_final_decision("HOLD", "NONE", confidence, 0.0)
+            
             base_decision = self._v3_regime_aware_decision(
                 prediction_fast, prediction_slow, confidence, 
                 volatility_fast, momentum_fast, momentum_slow,
                 regime, trend_strength, volatility_ratio,
-                threshold_boost=self.threshold_multiplier_boost + self.warmup_threshold_boost
+                threshold_boost=self.threshold_multiplier_boost + self.warmup_threshold_boost,
+                active_ev=active_ev
             )
             
             if base_decision == "HOLD":
-                return "HOLD"
+                return self._create_final_decision("HOLD", "NONE", confidence, 0.0)
             
-            # Step 6: Position Sizing based on confidence, regime-specific EV, regime, cooldown, trend, and warm-up rules
-            position_size = self._calculate_position_size(
-                confidence, active_ev, regime, cooldown_factor, trend_strength, 
-                is_warmup_phase  # Pass warm-up phase flag
+            # Step 6: SEPARATED SIGNAL, SIZING, and RISK LAYERS
+            
+            # ===========================================
+            # STEP 1 — RAW SIGNAL (unchanged)
+            # ===========================================
+            confidence_raw = confidence
+            ev_raw = active_ev
+            pred_fast_raw = prediction_fast
+            dynamic_threshold_raw = dynamic_threshold
+            
+            print(f"[Sizing RAW] conf={confidence_raw:.3f}, ev={ev_raw:.6f}, sig={abs(pred_fast_raw)/dynamic_threshold_raw:.3f}")
+            
+            # ===========================================
+            # STEP 2 — BASE SCORE (V3.2: dynamic confidence weight)
+            # ===========================================
+            # V3.2: Dynamic EV confidence weight based on regime
+            if regime == MarketRegime.TREND.value:
+                confidence_weight = 0.6  # Higher conviction in trends
+            elif regime == MarketRegime.RANGE.value:
+                confidence_weight = 0.4  # Lower conviction in ranges
+            else:
+                confidence_weight = 0.5  # Default weight
+            
+            score_base = (
+                confidence_raw * confidence_weight +
+                min(ev_raw / 0.002, 1.0) * 0.3 +
+                min(abs(pred_fast_raw) / dynamic_threshold_raw, 2.0) / 2 * 0.2
             )
             
-            # Step 7: Apply cooldown to signal strength
-            if cooldown_factor < 0.5:  # Strong cooldown - reduce position size
-                if position_size == PositionSize.LARGE:
-                    position_size = PositionSize.MEDIUM
-                elif position_size == PositionSize.MEDIUM:
-                    position_size = PositionSize.SMALL
+            print(f"[Sizing BASE] score={score_base:.3f} (conf_weight={confidence_weight:.1f})")
             
-            final_decision = f"{base_decision}_{position_size.value}"
+            # ===========================================
+            # STEP 2.5 — V3.3 BREAKOUT BOOST (SAFE)
+            # ===========================================
+            if regime == MarketRegime.BREAKOUT.value:
+                # Check if trend_strength increasing and vol_ratio rising
+                # For simplicity, we'll use current values vs threshold checks
+                trend_increasing = trend_strength > 0.002  # Strong trend threshold
+                vol_rising = volatility_ratio > 1.2  # Volatility expansion
+                
+                if trend_increasing and vol_rising:
+                    # Apply 1.1x boost capped at 1.0
+                    boosted_score = min(score_base * 1.1, 1.0)
+                    if boosted_score > score_base:
+                        print(f"[Sizing V3.3] BREAKOUT boost: {score_base:.3f} → {boosted_score:.3f} (trend↑, vol↑)")
+                        score_base = boosted_score
             
-            # Step 8: Update tracking
+            # ===========================================
+            # STEP 3 — SIZE DECISION (V3.7: single source of truth)
+            # ===========================================
+            size = self._get_position_size(score_base)
+            
+            # ===========================================
+            # STEP 4 — APPLY RISK MODIFIERS (V3.2: cooldown floor + bypass)
+            # ===========================================
+            # Cooldown factor already calculated
+            # V3.2: Apply cooldown floor to prevent over-suppression
+            # V3.5: Strengthened cooldown from 0.3 to 0.7 (stronger suppression)
+            cooldown_factor = max(cooldown_factor, 0.7)
+            
+            # V3.2: High-conviction bypass for strong trades
+            effective_cooldown = cooldown_factor
+            if (score_base > 0.85 and ev_raw > 0 and confidence_raw > 0.9):
+                # Bypass 50% of cooldown impact for exceptional trades
+                effective_cooldown = 0.5 * cooldown_factor + 0.5
+                print(f"[Sizing V3.2] High-conviction bypass: cooldown {cooldown_factor:.3f} → {effective_cooldown:.3f}")
+            
+            regime_modifier = 1.0
+            if regime == MarketRegime.BREAKOUT.value:
+                regime_modifier = 1.2
+            elif regime == MarketRegime.RANGE.value:
+                regime_modifier = 0.8
+            
+            risk_factor = effective_cooldown * regime_modifier
+            # V3.6: EV-AWARE SIZING (CRITICAL)
+            ev_penalty = 1.0
+            if ev_raw < 0:
+                ev_penalty = 0.7
+            
+            final_score = score_base * risk_factor * ev_penalty
+            
+            # V3.2: Enhanced sizing layers logging
+            print(f"[Sizing LAYERS] raw_score={score_base:.3f}, base_score={score_base:.3f}, risk_factor={risk_factor:.3f}, ev_penalty={ev_penalty:.3f}, final_score={final_score:.3f}")
+            print(f"[Sizing LAYERS] cooldown={effective_cooldown:.3f} (orig={cooldown_factor:.3f}), regime={regime_modifier:.3f}")
+            
+            # ===========================================
+            # STEP 5 — OPTIONAL DOWNGRADE ONLY
+            # ===========================================
+            if final_score < 0.7 and size == "LARGE":
+                size = "MEDIUM"
+            if final_score < 0.4:
+                size = "SMALL"
+            
+            # ===========================================
+            # STEP 5.5 — WARM-UP RULE (force SMALL)
+            # ===========================================
+            if is_warmup_phase:
+                size = "SMALL"
+                print(f"[Sizing WARMUP] size forced to SMALL (warm-up phase)")
+            
+            print(f"[Sizing FINAL] score={final_score:.3f} → {size} (V3.4 quality filtered)")
+            
+            # ===========================================
+            # STEP 6 — V3.5 TOP-TIER SIGNAL FILTER
+            # ===========================================
+            signal_strength = abs(pred_fast_raw) / dynamic_threshold_raw
+            # V3.6: Normalize confidence to prevent 1.0 saturation
+            confidence_normalized = min(confidence_raw, 0.85) * 0.9
+            
+            # V3.6: FIX SCORE CALCULATION (CRITICAL)
+            ev_component = max(ev_raw, 0)   # DO NOT allow negative EV to zero everything
+            score_final = confidence_normalized * signal_strength * (1 + ev_component)
+            
+            # V3.6: REMOVE DOUBLE FILTERING - Skip selectivity filter if EV override triggered
+            if ev_override_triggered:
+                print(f"[SELECTIVITY SKIP] EV override active - skipping selectivity filter to prevent double blocking")
+            else:
+                # V3.6: MINIMUM SIGNAL QUALITY CHECK
+                if signal_strength < 1.2:
+                    print(f"[SIGNAL QUALITY] signal_strength={signal_strength:.3f} < 1.2, HOLD")
+                    return self._create_final_decision("HOLD", "NONE", confidence, final_score)
+                
+                # V3.6: FIX SELECTIVITY SCORE LOGGING
+                print(f"[SELECTIVITY DETAIL] conf={confidence_normalized:.3f}, signal={signal_strength:.3f}, ev={ev_component:.3f}, score={score_final:.6f}")
+                
+                # Top-tier threshold filter (V3.5.1 reduced from 0.0012 → 0.0006)
+                if score_final < 0.0006:
+                    print(f"[SELECTIVITY FILTER] score={score_final:.6f} < 0.0006, trade_rate={recent_trade_rate:.3f}, passed=False")
+                    return self._create_final_decision("HOLD", "NONE", confidence, final_score)
+                else:
+                    print(f"[SELECTIVITY FILTER] score={score_final:.6f} >= 0.0006, trade_rate={recent_trade_rate:.3f}, passed=True")
+            
+            # ===========================================
+            # STEP 6.5 — V4 LIVE TRADING REALISM LAYER
+            # ===========================================
+            if self.v4_cost_adjustment_enabled:
+                # Get current price for cost calculations
+                current_price = signal.get('features', {}).get('price_change', 0) + 100  # Convert back to absolute price
+                
+                # Calculate V4 trading costs
+                total_cost, fee_cost, slippage_cost = self._calculate_v4_trading_costs(current_price, volatility_fast, base_decision)
+                
+                # Calculate expected return from signal
+                expected_return = abs(prediction_fast)  # Simple expectation based on signal strength
+                
+                # V4 Minimum Edge Filter
+                if not self._check_v4_minimum_edge(expected_return, total_cost):
+                    print(f"[V4] BLOCKED: Insufficient edge to cover costs")
+                    return self._create_final_decision("HOLD", "NONE", confidence, final_score)
+                
+                # V4 Position Decay Check
+                should_force_exit, decay_penalty = self._update_v4_position_decay(current_price)
+                if should_force_exit:
+                    print(f"[V4] FORCE EXIT: Position decay triggered")
+                    # Close position and apply penalty
+                    cost, steps = self.position_tracker.close_position()
+                    self.total_trading_costs += cost
+                    # Apply decay penalty to final score
+                    final_score *= decay_penalty
+                    return self._create_final_decision("HOLD", "NONE", confidence, final_score)
+                
+                # Apply decay penalty if applicable
+                final_score *= decay_penalty
+                
+                # Log V4 adjustments
+                print(f"[V4] Costs Applied: total={total_cost:.6f}, decay_penalty={decay_penalty:.3f}, adjusted_score={final_score:.3f}")
+                
+                # Store execution price for latency simulation
+                self.pending_execution_price = self._calculate_v4_adjusted_entry_price(current_price, volatility_fast, base_decision)
+            
+            # ===========================================
+            # STEP 7 — V3.7 FINAL DECISION (CLEAN FORMAT)
+            # ===========================================
+            # Create clean final decision using V3.7 normalization
+            final_decision_dict = self._create_final_decision(base_decision, size, confidence, final_score)
+            
+            # V3.7: Log final decision cleanly
+            print(f"[FINAL DECISION]")
+            print(f"action={final_decision_dict['action']}")
+            print(f"size={final_decision_dict['size']}")
+            print(f"confidence={final_decision_dict['confidence']:.3f}")
+            print(f"score={final_decision_dict['score']:.4f}")
+            
+            # Step 8: Update tracking with V3.5.1 enhancements
             if base_decision in ["BUY", "SELL"]:
                 self.cooldown_tracker.update_last_trade(current_time)
                 self.last_signal_prediction = prediction_fast
                 self.last_signal_time = current_time
+                
+                # Update trade budget tracking
+                if self.recent_trades:
+                    self.recent_trades[-1] = True  # Mark this event as a trade
+                
+                # V3.5.1: Update BUY/SELL balance tracking
+                self.recent_buy_sell_trades.append(base_decision)
+                if len(self.recent_buy_sell_trades) > self.buy_sell_window:
+                    self.recent_buy_sell_trades.pop(0)
             
-            print(f"[Agent] V3 Decision: {final_decision} ({regime_name} EV={active_ev:.6f}, cooldown={cooldown_factor:.2f})")
-            return final_decision
+            # V3.5.1: Comprehensive rebalance logging
+            ev_override = confidence >= 0.8 and active_ev < 0
+            print(f"[V3.5.1 REBALANCE] ev_override={ev_override}, score={score_final:.6f}, "
+                  f"bias_control={self.bias_correction_active}, recovery_mode={self.recovery_mode_active}, "
+                  f"trade_rate={recent_trade_rate:.3f}")
+            
+            print(f"[Agent] V3.7 Decision: {final_decision_dict['final_action']} ({regime_name} EV={active_ev:.6f}, cooldown={effective_cooldown:.2f}, selectivity=ON)")
+            return final_decision_dict
             
         except Exception as e:
             print(f"[Agent] V3 Decision error: {e}")
-            return "HOLD"
+            return self._create_final_decision("HOLD", "NONE", 0.0, 0.0)
     
     def _adaptive_decision_logic(self, prediction: float, confidence: float, volatility: float, momentum: float) -> str:
         """
@@ -1046,13 +1567,13 @@ class AgentAdapter:
         # Step 1: Minimum Signal Strength Check
         if below_min_signal and not bypass_min_signal:
             print(f"[Agent Debug] HOLD: Prediction {prediction_fast:.6f} below minimum signal {min_signal:.6f}")
-            return "HOLD"
+            return "HOLD"  # This method still returns string, will be converted in main method
         
         # Step 2: Enhanced Trend Filter Check (alignment-based)
         print(f"[Agent Debug] Step 2 - Checking alignment: {alignment_strength}")
         if alignment_strength == "HOLD":
             print(f"[Agent Debug] HOLD: Strong trend disagreement - fast ({prediction_fast:.6f}) and slow ({prediction_slow:.6f}) signals conflict")
-            return "HOLD"
+            return "HOLD"  # This method still returns string, will be converted in main method
         
         # Step 3: Enhanced Decision Logic with Momentum Confirmation
         print(f"[Agent Debug] Step 3 - Enhanced Decision Logic:")
@@ -1103,7 +1624,7 @@ class AgentAdapter:
     def _v3_regime_aware_decision(self, prediction_fast: float, prediction_slow: float, confidence: float, 
                                  volatility_fast: float, momentum_fast: float, momentum_slow: float,
                                  regime: str, trend_strength: float, volatility_ratio: float,
-                                 threshold_boost: float = 0.0) -> str:
+                                 threshold_boost: float = 0.0, active_ev: float = 0.0) -> str:
         """
         V3 Regime-aware decision logic that adapts behavior based on market conditions.
         
@@ -1126,20 +1647,20 @@ class AgentAdapter:
         
         # Adaptive thresholds based on regime
         if regime == MarketRegime.RANGE.value:
-            # Mean reversion bias in range markets
-            threshold_multiplier = 2.0  # Higher threshold for range markets
+            # V3.1 RANGE optimization: reduced threshold for more participation
+            threshold_multiplier = 1.6  # Reduced from 2.0 → 1.6 for increased participation
             momentum_bias = -momentum_fast  # Contrarian approach
-            print(f"[Agent Debug] RANGE regime: mean reversion bias")
+            print(f"[Agent Debug] RANGE regime: V3.1 optimized (threshold={threshold_multiplier})")
         elif regime == MarketRegime.TREND.value:
             # Trend following in strong trends
             threshold_multiplier = 1.0  # Lower threshold for trend markets
             momentum_bias = momentum_fast  # Momentum following
             print(f"[Agent Debug] TREND regime: trend following bias")
         elif regime == MarketRegime.BREAKOUT.value:
-            # Aggressive entry in breakout markets
-            threshold_multiplier = 0.5  # Lowest threshold for breakout
+            # V3.3 BREAKOUT optimization: aggressive entry with lower threshold
+            threshold_multiplier = 0.3  # V3.3: Lowered from 0.5 → 0.3 for earlier entry
             momentum_bias = momentum_fast * 1.5  # Amplified momentum
-            print(f"[Agent Debug] BREAKOUT regime: aggressive entry bias")
+            print(f"[Agent Debug] BREAKOUT regime: V3.3 aggressive entry (threshold={threshold_multiplier})")
         else:
             # Default behavior
             threshold_multiplier = 1.5
@@ -1170,6 +1691,71 @@ class AgentAdapter:
         print(f"  Dynamic threshold: {dynamic_threshold:.6f}")
         print(f"  Prediction: {prediction_fast:.6f} (no momentum boost)")
         
+        # V3.4 BREAKOUT QUALITY FILTER: Check BEFORE any other logic
+        if regime == MarketRegime.BREAKOUT.value:
+            # Calculate BREAKOUT-specific dynamic threshold
+            breakout_threshold_multiplier = 0.3  # V3.3: Lower threshold for early entry
+            volatility_factor = max(volatility_fast, 0.00005)
+            compression = 1.0
+            if volatility_fast < 0.00008:
+                compression = 0.5
+            elif volatility_fast < 0.00012:
+                compression = 0.75
+            
+            breakout_dynamic_threshold = breakout_threshold_multiplier * volatility_factor * compression
+            breakout_dynamic_threshold = max(breakout_dynamic_threshold, 0.00005)
+            
+            # Check signal alignment
+            signals_aligned = (prediction_fast * prediction_slow) > 0
+            momentum_confirmed = (prediction_fast * momentum_fast) > 0
+            
+            # V3.4: Calculate signal strength filter
+            signal_strength = abs(prediction_fast) / breakout_dynamic_threshold
+            
+            # V3.4: Apply quality filters
+            min_ev_threshold = 0.0015  # V3.4: Minimum EV threshold
+            min_signal_strength = 1.2   # V3.4: Minimum signal strength
+            min_confidence_breakout = 0.75  # V3.4: Stricter confidence for BREAKOUT
+            
+            ev_passes = active_ev > min_ev_threshold
+            signal_strength_passes = signal_strength > min_signal_strength
+            confidence_passes = confidence > min_confidence_breakout
+            
+            all_quality_filters_pass = ev_passes and signal_strength_passes and confidence_passes
+            
+            print(f"[BREAKOUT FILTER] V3.4 QUALITY CHECK:")
+            print(f"  EV: {active_ev:.6f} > {min_ev_threshold:.6f} = {ev_passes}")
+            print(f"  Signal strength: {signal_strength:.3f} > {min_signal_strength:.1f} = {signal_strength_passes}")
+            print(f"  Confidence: {confidence:.3f} > {min_confidence_breakout:.2f} = {confidence_passes}")
+            print(f"  All quality filters pass: {all_quality_filters_pass}")
+            
+            print(f"[BREAKOUT EXECUTION] HARD RULE CHECK:")
+            print(f"  Signals aligned: {signals_aligned}")
+            print(f"  Momentum confirmed: {momentum_confirmed}")
+            print(f"  Signal strength: {abs(prediction_fast):.6f} > {breakout_dynamic_threshold:.6f} = {abs(prediction_fast) > breakout_dynamic_threshold}")
+            
+            # V3.4 HARD RULE: BREAKOUT MUST TRADE only if ALL quality filters pass
+            if signals_aligned and momentum_confirmed and all_quality_filters_pass and abs(prediction_fast) > breakout_dynamic_threshold:
+                if prediction_fast > 0:
+                    print(f"[BREAKOUT EXECUTION] reason=high_quality_forced_entry, blocked_by=NONE")
+                    return "BUY"  # Minimum action: SMALL position will be determined by sizing layer
+                else:
+                    print(f"[BREAKOUT EXECUTION] reason=high_quality_forced_entry, blocked_by=NONE")
+                    return "SELL"  # Minimum action: SMALL position will be determined by sizing layer
+            else:
+                # V3.4: Log why quality filters blocked the trade
+                if not all_quality_filters_pass:
+                    blocked_by = []
+                    if not ev_passes:
+                        blocked_by.append(f"EV({active_ev:.6f})")
+                    if not signal_strength_passes:
+                        blocked_by.append(f"signal_strength({signal_strength:.2f})")
+                    if not confidence_passes:
+                        blocked_by.append(f"confidence({confidence:.3f})")
+                    print(f"[BREAKOUT EXECUTION] reason=quality_filters_failed, blocked_by={','.join(blocked_by)}")
+        
+        # V3.4: REMOVED HIGH CONVICTION BYPASS - no longer force low-quality trades
+        
         # Decision logic with regime adjustment and momentum confirmation
         momentum_confirmed = (prediction_fast * momentum_fast) > 0
         
@@ -1178,36 +1764,80 @@ class AgentAdapter:
         elif prediction_fast < -dynamic_threshold and trend_strength > 0.001 and momentum_confirmed:
             return "SELL"
         
-        # RANGE TREND MODE: Allow controlled trend-following trades in RANGE regime
+        # RANGE V3.1 OPTIMIZATIONS: Enhanced signal acceptance
         if regime == MarketRegime.RANGE.value:
+            # V3.1 #1: SOFT THRESHOLD ZONE for near-miss trades
+            weak_signal_zone = 0.7 * dynamic_threshold
+            in_weak_zone = abs(prediction_fast) > weak_signal_zone
+            
+            # V3.1 #4: Reduced confidence floor for RANGE (0.7 → 0.6)
+            confidence_floor = 0.6
+            confidence_ok = confidence > confidence_floor
+            
+            # Check signal alignment
             aligned = (prediction_fast * prediction_slow) > 0
-            strong_signal = abs(prediction_fast) > dynamic_threshold * 1.5
-            momentum_ok = abs(momentum_fast) > 0
-            confidence_ok = confidence > 0.6
+            momentum_confirmed = (prediction_fast * momentum_fast) > 0
             
-            print(f"[Agent Debug] RANGE TREND MODE CHECK:")
-            print(f"  Aligned: {aligned}")
-            print(f"  Strong signal: {strong_signal} (pred={abs(prediction_fast):.6f} > {dynamic_threshold * 1.5:.6f})")
-            print(f"  Momentum OK: {momentum_ok}")
-            print(f"  Confidence OK: {confidence_ok}")
+            print(f"[Agent Debug] RANGE V3.1 OPTIMIZATION CHECK:")
+            print(f"  Weak signal zone: {weak_signal_zone:.6f} (0.7 * threshold)")
+            print(f"  In weak zone: {in_weak_zone} (pred={abs(prediction_fast):.6f})")
+            print(f"  Confidence floor: {confidence_floor}, OK: {confidence_ok} (conf={confidence:.3f})")
+            print(f"  Signals aligned: {aligned}")
+            print(f"  Momentum confirmed: {momentum_confirmed}")
             
-            if aligned and strong_signal and momentum_ok and confidence_ok:
-                print(f"[Agent] RANGE TREND MODE: aligned signal accepted")
+            # V3.1 #1: Allow SMALL entries for weak but aligned signals
+            if in_weak_zone and confidence_ok and aligned and momentum_confirmed:
+                print(f"[Agent] RANGE V3.1 WEAK ZONE: small entry accepted (pred={prediction_fast:.6f})")
                 if prediction_fast > 0:
-                    return "BUY_SMALL"
+                    return "BUY"  # Base decision, sizing will be handled in main method
                 else:
-                    return "SELL_SMALL"
+                    return "SELL"  # Base decision, sizing will be handled in main method
+            
+            # V3.1 #3: BOOST MEAN REVERSION EDGE - allow counter-trend trades
+            signals_opposite = (prediction_fast * prediction_slow) < 0
+            strong_signal = abs(prediction_fast) > dynamic_threshold
+            
+            print(f"[Agent Debug] RANGE COUNTER-TREND CHECK:")
+            print(f"  Signals opposite: {signals_opposite}")
+            print(f"  Strong signal: {strong_signal} (pred={abs(prediction_fast):.6f} > {dynamic_threshold:.6f})")
+            
+            if signals_opposite and strong_signal and confidence_ok:
+                print(f"[Agent] RANGE V3.1 COUNTER-TREND: mean reversion trade accepted (pred={prediction_fast:.6f})")
+                if prediction_fast > 0:
+                    return "BUY"  # Base decision, sizing will be handled in main method
+                else:
+                    return "SELL"  # Base decision, sizing will be handled in main method
+            
+            # Original strong signal logic (maintained)
+            strong_aligned = aligned and abs(prediction_fast) > dynamic_threshold * 1.5
+            momentum_ok = abs(momentum_fast) > 0
+            
+            print(f"[Agent Debug] RANGE STRONG ALIGNED CHECK:")
+            print(f"  Strong aligned: {strong_aligned} (pred={abs(prediction_fast):.6f} > {dynamic_threshold * 1.5:.6f})")
+            print(f"  Momentum OK: {momentum_ok}")
+            
+            if strong_aligned and momentum_ok and confidence_ok:
+                print(f"[Agent] RANGE V3.1 STRONG ALIGNED: signal accepted")
+                if prediction_fast > 0:
+                    return "BUY"
+                else:
+                    return "SELL"
             else:
-                if not aligned:
-                    print(f"[Agent] RANGE TREND MODE: blocked (reason=signals_not_aligned)")
-                elif not strong_signal:
-                    print(f"[Agent] RANGE TREND MODE: blocked (reason=weak_signal: {abs(prediction_fast):.6f} <= {dynamic_threshold * 1.5:.6f})")
-                elif not momentum_ok:
-                    print(f"[Agent] RANGE TREND MODE: blocked (reason=no_momentum: {momentum_fast:.6f})")
+                # Log why all RANGE options were blocked
+                if not in_weak_zone and not strong_aligned and not (signals_opposite and strong_signal):
+                    print(f"[Agent] RANGE V3.1: blocked (reason=weak_signal: {abs(prediction_fast):.6f} <= {weak_signal_zone:.6f})")
+                elif not confidence_ok:
+                    print(f"[Agent] RANGE V3.1: blocked (reason=low_confidence: {confidence:.3f} <= {confidence_floor})")
+                elif not aligned and not signals_opposite:
+                    print(f"[Agent] RANGE V3.1: blocked (reason=unclear_alignment)")
+                elif not momentum_confirmed and not (signals_opposite and strong_signal):
+                    print(f"[Agent] RANGE V3.1: blocked (reason=no_momentum_confirmation)")
                 else:
-                    print(f"[Agent] RANGE TREND MODE: blocked (reason=low_confidence: {confidence:.3f})")
+                    print(f"[Agent] RANGE V3.1: blocked (reason=combination_failed)")
         
-        return "HOLD"
+        # V3.4: REMOVED DIRECT SIGNAL CHECK - quality filters now control all breakout trades
+        
+        return "HOLD"  # This method still returns string, will be converted in main method
     
     def _check_warmup_loss_protection(self):
         """
@@ -1248,56 +1878,6 @@ class AgentAdapter:
             self.warmup_threshold_boost = 0.0
             self.cooldown_tracker.cooldown_window = timedelta(seconds=30)  # Reset to normal
             print(f"[Agent] WARMUP PROTECTION: loss streak resolved, returning to normal thresholds")
-    
-    def _calculate_position_size(self, confidence: float, ev: float, regime: str, 
-                               cooldown_factor: float, trend_strength: float, is_warmup_phase: bool = False) -> PositionSize:
-        """
-        V3 Position sizing based on confidence, EV, and market conditions.
-        
-        Args:
-            confidence: Signal confidence (0-1)
-            ev: Expected value
-            regime: Current market regime
-            cooldown_factor: Current cooldown reduction factor
-            trend_strength: Trend strength
-            is_warmup_phase: Whether we're in warm-up phase (first 20 trades)
-            
-        Returns:
-            PositionSize enum
-        """
-        # WARM-UP RULE: Force SMALL position size during EV bypass phase
-        if is_warmup_phase:
-            print(f"[Agent] WARMUP MODE: size forced to SMALL (warm-up phase)")
-            return PositionSize.SMALL
-        
-        # Base size calculation from confidence and EV
-        confidence_score = confidence
-        ev_score = min(ev * 100, 1.0)  # Scale EV to 0-1 range
-        trend_score = min(trend_strength * 100, 1.0)  # Scale trend strength
-        
-        # Combined score
-        combined_score = (confidence_score + ev_score + trend_score) / 3
-        
-        # Apply cooldown factor
-        combined_score *= cooldown_factor
-        
-        # Regime adjustments
-        if regime == MarketRegime.BREAKOUT.value:
-            combined_score *= 1.2  # Boost size in breakout
-        elif regime == MarketRegime.RANGE.value:
-            combined_score *= 0.8  # Reduce size in range
-        
-        print(f"[Agent Debug] Position Sizing:")
-        print(f"  Scores: conf={confidence_score:.3f}, ev={ev_score:.3f}, trend={trend_score:.3f}")
-        print(f"  Combined: {combined_score:.3f} (cooldown={cooldown_factor:.2f})")
-        
-        # Size thresholds
-        if combined_score >= 0.7:
-            return PositionSize.LARGE
-        elif combined_score >= 0.4:
-            return PositionSize.MEDIUM
-        else:
-            return PositionSize.SMALL
     
     def update_trade_metrics(self, decision: str, entry_price: float, exit_price: float):
         """
@@ -1389,8 +1969,13 @@ class AgentAdapter:
 class ResearchAdapter:
     """Adapter for AI Research Platform with logging fail-safe system."""
     
-    def __init__(self):
-        """Initialize the research adapter with fail-safe logging."""
+    def __init__(self, agent_adapter: Optional[AgentAdapter] = None):
+        """Initialize the research adapter with fail-safe logging and V4 cost integration.
+        
+        Args:
+            agent_adapter: Reference to AgentAdapter for V4 cost calculations
+        """
+        self.agent_adapter = agent_adapter  # Store reference for V4 cost access
         try:
             # Initialize with real experiment runner
             self.experiment_runner = ExperimentRunner()
@@ -1434,10 +2019,90 @@ class ResearchAdapter:
             self.experiment_logging_enabled = False  # Disable experiment logging on error
             print("[Research] Fallback mode: experiment logging disabled")
     
+    def compute_reward_v4(self, previous_decision: str, previous_price: float, current_price: float, 
+                        prediction: float = 0.0, confidence: float = 1.0, 
+                        trading_costs: float = 0.0, volatility: float = 0.0) -> float:
+        """
+        V4: Compute reward based on NET PROFIT after all trading costs.
+        
+        Args:
+            previous_decision: The decision made at previous step (BUY, SELL, HOLD)
+            previous_price: Price at previous step
+            current_price: Current price
+            prediction: Prediction value (>0 for LONG bias, <0 for SHORT bias)
+            confidence: Confidence score for scaling (0.0 to 1.0)
+            trading_costs: Total trading costs as percentage (fees + slippage)
+            volatility: Volatility at time of trade for slippage calculation
+            
+        Returns:
+            Net profit reward after costs, clipped to [-0.01, +0.01]
+        """
+        # Calculate gross return
+        gross_return = (current_price - previous_price) / previous_price if previous_price > 0 else 0.0
+        
+        # Determine decision direction
+        if previous_decision in ["BUY", "WEAK_BUY"]:
+            decision_direction = 1  # LONG bias
+            decision_type = "TRADE"
+        elif previous_decision in ["SELL", "WEAK_SELL"]:
+            decision_direction = -1  # SHORT bias
+            decision_type = "TRADE"
+        else:  # HOLD
+            decision_direction = 1 if prediction > 0 else -1  # Use prediction for direction
+            decision_type = "HOLD"
+        
+        # V4: Calculate net profit after all costs
+        if decision_type == "TRADE":
+            # For trades: apply all costs (entry + exit fees + slippage)
+            net_return = gross_return - trading_costs
+            
+            # Apply direction sign
+            if decision_direction == 1:  # BUY
+                net_profit = net_return
+            else:  # SELL
+                net_profit = -net_return  # Reverse sign for short positions
+            
+            print(f"[V4 Reward] TRADE: gross={gross_return:.6f}, costs={trading_costs:.6f}, net={net_return:.6f}, profit={net_profit:.6f}")
+            
+        else:  # HOLD
+            # For holds: no trading costs, just opportunity cost of not trading
+            net_profit = gross_return * 0.5  # Reduced reward for holds
+            
+            # Apply prediction direction check
+            prediction_correct = (prediction * gross_return) > 0
+            if not prediction_correct:
+                net_profit = -abs(gross_return) * 0.5
+            
+            print(f"[V4 Reward] HOLD: gross={gross_return:.6f}, net_profit={net_profit:.6f}, pred_correct={prediction_correct}")
+        
+        # V4: Apply outcome-based multipliers (preserved from original)
+        strong_threshold = 0.0005
+        weak_threshold = 0.0001
+        
+        if abs(gross_return) >= strong_threshold:
+            outcome = "STRONG"
+            multiplier = 1.5
+        elif abs(gross_return) >= weak_threshold:
+            outcome = "WEAK"
+            multiplier = 1.0
+        else:
+            outcome = "NEUTRAL"
+            multiplier = 0.2
+        
+        # Apply outcome multiplier and confidence scaling
+        net_profit *= multiplier * confidence
+        
+        # Clip reward to prevent spikes
+        net_profit = max(min(net_profit, 0.01), -0.01)
+        
+        print(f"[V4 Reward] Final: outcome={outcome}, multiplier={multiplier:.1f}, confidence={confidence:.3f}, reward={net_profit:.6f}")
+        
+        return net_profit
+    
     def compute_reward(self, previous_decision: str, previous_price: float, current_price: float, 
                       prediction: float = 0.0, confidence: float = 1.0) -> float:
         """
-        Compute continuous directional reward with graded outcome strength.
+        Original reward computation (preserved for compatibility).
         
         Args:
             previous_decision: The decision made at previous step (BUY, SELL, WEAK_BUY, WEAK_SELL, HOLD)
@@ -1609,7 +2274,34 @@ class ResearchAdapter:
                 # Use combined prediction for reward calculation
                 combined_prediction = (prediction_fast + prediction_slow) / 2.0
                 confidence = signal.get('confidence', 1.0)
-                reward = self.compute_reward(self.last_decision, self.last_price, current_price, combined_prediction, confidence)
+                volatility = signal.get('volatility_fast', 0.0)
+                
+                # V4: Calculate trading costs if AgentAdapter is available and V4 is enabled
+                trading_costs = 0.0
+                if (self.agent_adapter and 
+                    hasattr(self.agent_adapter, 'v4_cost_adjustment_enabled') and 
+                    self.agent_adapter.v4_cost_adjustment_enabled and 
+                    self.last_decision in ['BUY', 'SELL']):
+                    
+                    # Calculate V4 trading costs for the previous trade
+                    trading_costs, _, _ = self.agent_adapter._calculate_v4_trading_costs(
+                        self.last_price, volatility, self.last_decision
+                    )
+                    print(f"[V4 Research] Applied trading costs: {trading_costs:.6f} for {self.last_decision}")
+                
+                # Use V4 reward function if costs are available, otherwise fall back to original
+                if trading_costs > 0:
+                    reward = self.compute_reward_v4(
+                        self.last_decision, self.last_price, current_price, 
+                        combined_prediction, confidence, trading_costs, volatility
+                    )
+                else:
+                    # Fall back to original reward calculation (for compatibility)
+                    reward = self.compute_reward(
+                        self.last_decision, self.last_price, current_price, 
+                        combined_prediction, confidence
+                    )
+                
                 self.total_reward += reward
                 self.reward_history.append(reward)
             
